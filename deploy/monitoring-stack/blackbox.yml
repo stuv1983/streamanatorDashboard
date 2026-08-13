@@ -1,0 +1,33 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 8s
+    http:
+      valid_status_codes: [200]
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+
+  # Several services here answer 401/403 without credentials, which still
+  # proves the application is alive — treat those as success rather than
+  # storing an API key in the exporter.
+  http_2xx_or_auth:
+    prober: http
+    timeout: 8s
+    http:
+      valid_status_codes: [200, 401, 403]
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4

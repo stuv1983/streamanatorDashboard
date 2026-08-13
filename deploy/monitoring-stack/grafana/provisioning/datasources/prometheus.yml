@@ -1,0 +1,20 @@
+# Grafana datasource provisioning.
+#
+# A fixed `uid` (not a random one) so the bundled dashboard can reference this
+# datasource deterministically — provisioned dashboards need to name a
+# datasource that is guaranteed to exist by the same uid every time the stack
+# is recreated.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: streamanator-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches the scrape_interval in prometheus.yml, so range queries pick a
+      # sensible default step instead of over-fetching.
+      timeInterval: 30s

@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit
+# ---------------------------------------------------------------------------
+.env
+.env.bak
+.env.bak.*
+.streamlit/secrets.toml
+deploy/monitoring-stack/.env
+# TLS material (e.g. the UniFi console CA bundle) is environment-specific.
+*.pem
+*.crt
+*.key
+
+# ---------------------------------------------------------------------------
+# Runtime state (regenerated; some of it holds hashes and the audit trail)
+# ---------------------------------------------------------------------------
+var/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# ---------------------------------------------------------------------------
+# The home-network blueprint is the reference doc this dashboard was built
+# from, not part of the dashboard. It describes the network in full detail, so
+# it is kept OUT of this (public) repository by default. Remove this line if
+# you deliberately want to publish it.
+# ---------------------------------------------------------------------------
+Home-Network-README.md
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

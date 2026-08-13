@@ -1,0 +1,131 @@
+# Streamanator Dashboard theme.
+#
+# Dark-first NOC console: near-black ground, one cool accent, and semantic
+# status colours that stay distinguishable at a glance. Both light and dark
+# blocks are defined so the theme toggle works, but the design target is dark.
+#
+# All colour lives here rather than in CSS scattered through the app — the
+# status palette in components/theme.py reads from the same semantic names.
+
+[server]
+headless = true
+# Bound to all interfaces so it is reachable on the Media-DMZ VLAN. Do NOT
+# port-forward this from the Internet; it is an internal management tool.
+address = "0.0.0.0"
+port = 8600
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[theme]
+base = "dark"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 15
+codeFontSize = "0.85rem"
+headingFontSizes = ["30px", "23px", "19px", "16px", "14px", "13px"]
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+linkUnderline = false
+baseRadius = "8px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.dark]
+primaryColor = "#22B8CF"
+backgroundColor = "#0B0F14"
+secondaryBackgroundColor = "#141A21"
+textColor = "#DCE3EA"
+linkColor = "#3BC9DB"
+borderColor = "#242D38"
+codeBackgroundColor = "#101720"
+codeTextColor = "#A5D8E8"
+dataframeBorderColor = "#242D38"
+dataframeHeaderBackgroundColor = "#141A21"
+
+# Semantic status palette. Healthy/warning/critical must remain separable for
+# the most common colour-vision deficiencies, which is why warning sits at
+# amber rather than yellow-green, and every status is also given an icon and a
+# text label in the UI.
+greenColor = "#2FB344"
+yellowColor = "#E8B339"
+orangeColor = "#F0883E"
+redColor = "#E5484D"
+blueColor = "#3BC9DB"
+violetColor = "#A98EDA"
+grayColor = "#7A8794"
+
+# Categorical series colours — deliberately NOT the status colours above.
+# Status hues mean good/bad; these mean identity, and reusing one for the other
+# would make "series 4" look like a failure. Validated against the #0B0F14
+# surface for lightness band, chroma floor, CVD separation (worst adjacent
+# pair ΔE 8.7 deutan), normal-vision separation and 3:1 contrast.
+chartCategoricalColors = [
+  "#2AA3C0",
+  "#C27F2E",
+  "#37AC7B",
+  "#A87FCF",
+  "#D9636E",
+]
+chartSequentialColors = [
+  "#0B1F26", "#0E2E38", "#11404E", "#155466", "#1A6A80",
+  "#20819A", "#2799B4", "#37B2CB", "#5FC9DD", "#93DFEC",
+]
+
+[theme.dark.sidebar]
+backgroundColor = "#080C10"
+secondaryBackgroundColor = "#141A21"
+codeBackgroundColor = "#101720"
+textColor = "#DCE3EA"
+borderColor = "#1D242D"
+primaryColor = "#22B8CF"
+
+[theme.light]
+primaryColor = "#0E7C91"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F5F8"
+textColor = "#1A2027"
+linkColor = "#0E7C91"
+borderColor = "#D5DDE5"
+codeBackgroundColor = "#F2F5F8"
+codeTextColor = "#0E5A6B"
+dataframeBorderColor = "#D5DDE5"
+dataframeHeaderBackgroundColor = "#F2F5F8"
+
+greenColor = "#1A7F37"
+yellowColor = "#9A6700"
+orangeColor = "#BC4C00"
+redColor = "#CF222E"
+blueColor = "#0E7C91"
+violetColor = "#6F42C1"
+grayColor = "#57606A"
+
+# Light-mode categorical series. Passes the lightness, chroma, normal-vision
+# and contrast checks; the green/orange adjacent pair sits at ΔE 7.0 deutan,
+# inside the 6-8 band that is only legal alongside secondary encoding — which
+# is why every multi-series chart in this app ships a legend and direct labels.
+chartCategoricalColors = [
+  "#0086A3",
+  "#8A5410",
+  "#0F7A52",
+  "#6B45A6",
+  "#B02A3A",
+]
+chartSequentialColors = [
+  "#EAF6F9", "#CFEBF2", "#A9DCE8", "#7FCADB", "#54B6CC",
+  "#309FB8", "#1B87A0", "#116E85", "#0B5568", "#073C4A",
+]
+
+[theme.light.sidebar]
+backgroundColor = "#F2F5F8"
+secondaryBackgroundColor = "#E6ECF2"
+textColor = "#1A2027"
+borderColor = "#D5DDE5"
+primaryColor = "#0E7C91"

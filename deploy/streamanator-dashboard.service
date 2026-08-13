@@ -1,0 +1,95 @@
+# Streamanator Dashboard systemd unit.
+#
+# Managed directly by systemd — no tmux wrapper. Install with:
+#   sudo cp deploy/streamanator-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now streamanator-dashboard
+#
+# Logs: journalctl -u streamanator-dashboard -f
+
+[Unit]
+Description=Streamanator Operations Dashboard (Streamlit)
+Documentation=file:///home/arm/projects/streamanator_dashboard/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+# Not a hard dependency: the dashboard must still start and report Docker as
+# unavailable rather than refusing to run.
+After=local-fs.target
+
+[Service]
+Type=simple
+User=arm
+Group=arm
+# Needs the docker group to read container state, and video/disk group
+# membership is NOT required — SMART goes through the sudoers drop-in or the
+# exporter instead.
+SupplementaryGroups=docker
+
+WorkingDirectory=/home/arm/projects/streamanator_dashboard
+EnvironmentFile=-/home/arm/projects/streamanator_dashboard/.env
+
+# --server.fileWatcherType=none is deliberate. In a service there are no live
+# code edits to pick up, and the watcher is actively harmful here: redeploying
+# under a running server makes it hot-reload modules mid-flight, which breaks
+# cached object identity and throws errors until a restart. Deploys should
+# restart the unit, not be absorbed by a watcher.
+ExecStart=/home/arm/projects/streamanator_dashboard/.venv/bin/streamlit run \
+    /home/arm/projects/streamanator_dashboard/app.py \
+    --server.port=8600 \
+    --server.address=0.0.0.0 \
+    --server.headless=true \
+    --server.fileWatcherType=none \
+    --browser.gatherUsageStats=false
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streamanator-dashboard
+
+# ---------------------------------------------------------------------------
+# Hardening. The monitoring side reads widely and writes almost nothing; the
+# admin console adds a narrow, allowlisted set of privileged commands. The
+# sandbox stays tight, with the two exemptions below called out explicitly
+# rather than buried — they are the reason this unit is not fully locked down.
+# ---------------------------------------------------------------------------
+NoNewPrivileges=false
+# ^ MUST stay false while the admin console runs privileged actions. sudo is
+#   setuid, and NoNewPrivileges=true blocks the setuid transition — every
+#   sudo-backed action would fail with a permission error that looks like a
+#   sudoers problem and is not.
+#
+#   Set this to true if you decide the console should be configuration-only.
+#   In that case also set ADMIN_ACTIONS_ENABLED=false in .env, so the UI shows
+#   each command to run over SSH instead of offering a button that cannot work.
+#   Two settings for one intent, but the alternative is a service that has the
+#   capability switched off in one place and advertised in another.
+
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The venv, history store, .env, account store and audit log all live under
+# the project directory. Nothing outside it is writable.
+ReadWritePaths=/home/arm/projects/streamanator_dashboard
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=false
+# ^ cgroup read access is needed to attribute container resource usage.
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# Resource ceilings so a runaway collection can never starve Plex or the array.
+MemoryMax=1G
+CPUQuota=100%
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

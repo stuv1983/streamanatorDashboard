@@ -1,0 +1,13 @@
+# Streamanator Dashboard runtime dependencies.
+#
+# Deliberately minimal. Everything the dashboard reads from the host uses the
+# standard library (os.statvfs, /proc, sqlite3, subprocess) rather than pulling
+# in psutil or the Docker SDK — fewer dependencies on a machine whose job is
+# serving media.
+
+streamlit>=1.57,<2
+altair>=5.4,<6
+pandas>=2.2,<3
+requests>=2.32,<3
+
+# Test-only (install with: pip install -r requirements-dev.txt)

@@ -1,0 +1,73 @@
+# Privileged actions for the dashboard admin console.
+#
+# OPTIONAL. Without this file the admin console still works — every action
+# that needs root simply renders as "run this over SSH" with the exact command
+# shown. Install this only if you want those buttons to work directly.
+#
+# Install with:
+#   sudo install -m 0440 -o root -g root \
+#       deploy/sudoers-streamanator-admin /etc/sudoers.d/streamanator-dashboard-admin
+#   sudo visudo -c          # ALWAYS validate before closing the session
+#
+# Keep a second root shell open until `visudo -c` reports "parsed OK". A
+# malformed file in /etc/sudoers.d disables sudo for every user on the host.
+#
+# ---------------------------------------------------------------------------
+# WHY THESE COMMANDS AND NO OTHERS
+# ---------------------------------------------------------------------------
+#
+# Every entry below is a complete command line with all arguments fixed. That
+# is deliberate and it is what makes this file safe to install:
+#
+#   * No wildcards. `systemctl restart *` would permit restarting units whose
+#     ExecStart runs arbitrary code as root — including units an attacker can
+#     create. Each unit is named.
+#
+#   * No script paths under /home. A NOPASSWD grant on a file the invoking
+#     user can write is not a grant, it is a root shell with extra steps:
+#     rewrite the script, run it, and you are root. Every command here is a
+#     distribution binary under /usr.
+#
+#   * `shutdown -r +1`, never `reboot`. The delay is what makes the cancel
+#     path usable, and `shutdown -c` is granted alongside it so a cancel is
+#     always possible.
+#
+# The registry in `admin/actions.py` is the source of truth for this list, and
+# `tests/test_admin_actions.py` fails if the two disagree — so this file cannot
+# quietly drift into granting more, or less, than the console expects.
+#
+# ---------------------------------------------------------------------------
+# NOT GRANTED, ON PURPOSE
+# ---------------------------------------------------------------------------
+#
+#   * Installing sudoers files. `smart.install_sudoers` reads a file from the
+#     project directory, which the dashboard account can write. Granting it
+#     would recreate exactly the escalation path described above. It is marked
+#     `never_grant` in the registry and is always SSH-only.
+#
+#   * Anything that removes a disk, edits the array, or deletes a backup.
+#     Those are not in the registry at all.
+#
+# ---------------------------------------------------------------------------
+
+Cmnd_Alias STREAMANATOR_SERVICES = \
+    /usr/bin/systemctl restart streamanator-dashboard, \
+    /usr/bin/systemctl restart backup-nightly.service, \
+    /usr/bin/systemctl restart sports-data-lab.service, \
+    /usr/bin/systemctl restart aqualog.service, \
+    /usr/bin/systemctl restart plexmediaserver.service, \
+    /usr/bin/systemctl reset-failed
+
+Cmnd_Alias STREAMANATOR_POWER = \
+    /usr/sbin/shutdown -r +1, \
+    /usr/sbin/shutdown -c
+
+arm ALL=(root) NOPASSWD: STREAMANATOR_SERVICES, STREAMANATOR_POWER
+
+# Belt and braces. If the aliases above are ever loosened by an edit, these
+# denials still block the forms that would turn a service restart into
+# arbitrary root execution.
+arm ALL=(root) !/usr/bin/systemctl *link*, \
+                !/usr/bin/systemctl *edit*, \
+                !/usr/bin/systemctl *set-property*, \
+                !/usr/bin/systemctl *daemon-reexec*

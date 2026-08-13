@@ -1,0 +1,215 @@
+# Prometheus alerting rules mirroring the dashboard's thresholds.
+#
+# The dashboard evaluates its own rules live (health/rules.py); these exist so
+# the same conditions can page you when nobody is looking at the screen. Keep
+# the two in sync — the thresholds here match health/thresholds.py defaults.
+
+groups:
+  - name: raid
+    rules:
+      - alert: RaidDegraded
+        expr: node_md_disks{state="active"} < node_md_disks_required
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAID array {{ $labels.device }} is degraded"
+          description: >-
+            Active members below the required count. RAID5 has no remaining
+            redundancy; a second failure loses the array. Identify the missing
+            member by serial, not by /dev/sdX.
+
+      - alert: RaidResyncRunning
+        expr: node_md_state{state="resync"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAID {{ $labels.device }} is resyncing"
+
+  - name: disks
+    rules:
+      - alert: SmartHealthFailed
+        expr: smartctl_device_smart_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART health failed on {{ $labels.serial_number }}"
+
+      - alert: PendingSectors
+        expr: smartctl_device_attribute{attribute_name="Current_Pending_Sector",attribute_value_type="raw"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pending sectors on {{ $labels.serial_number }}"
+
+      - alert: OfflineUncorrectable
+        expr: smartctl_device_attribute{attribute_name="Offline_Uncorrectable",attribute_value_type="raw"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Uncorrectable sectors on {{ $labels.serial_number }}"
+
+      # The CRC rule fires on movement, not magnitude. WPV2E6LL carries ~5670
+      # errors from past SATA-path faults; a static count is not an alert.
+      - alert: UdmaCrcIncreasing
+        expr: >-
+          increase(
+            smartctl_device_attribute{attribute_name="UDMA_CRC_Error_Count",attribute_value_type="raw"}[24h]
+          ) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UDMA CRC errors increasing on {{ $labels.serial_number }}"
+          description: >-
+            CRC errors are SATA link checksum failures, not media errors.
+            Inspect the cable, connector, backplane and controller port before
+            replacing the disk.
+
+      - alert: DiskTemperatureHigh
+        expr: smartctl_device_temperature{temperature_type="current"} > 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ $labels.serial_number }} above 50 C"
+
+      - alert: DiskTemperatureCritical
+        expr: smartctl_device_temperature{temperature_type="current"} > 55
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk {{ $labels.serial_number }} above 55 C"
+
+  - name: storage
+    rules:
+      - alert: FilesystemWarning
+        expr: >-
+          100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs"}) > 80
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} above 80% used"
+
+      - alert: FilesystemCritical
+        expr: >-
+          100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs"}) > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.mountpoint }} above 95% used"
+
+      # Projection rather than a level: catches a filesystem filling fast even
+      # while its current percentage still looks acceptable.
+      - alert: FilesystemFillingWithin7Days
+        expr: >-
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs"}[7d], 7 * 86400) < 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} projected full within 7 days"
+
+  - name: host
+    rules:
+      - alert: HighCpu
+        expr: >-
+          100 * (1 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU above 90% for 10 minutes"
+
+      - alert: HighIowait
+        expr: 100 * avg by(instance)(rate(node_cpu_seconds_total{mode="iowait"}[5m])) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "iowait above 20% for 10 minutes"
+
+      - alert: LowMemoryAvailable
+        expr: 100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Available memory below 10%"
+
+      - alert: SystemdUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "systemd unit {{ $labels.name }} has failed"
+
+  - name: services
+    rules:
+      - alert: ProbeFailed
+        expr: probe_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Probe failing for {{ $labels.instance }}"
+          description: >-
+            The container may still be running. A failing probe means the
+            application is not answering correctly.
+
+      - alert: InternetDown
+        expr: probe_success{instance="1.1.1.1"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Internet unreachable for 2 minutes"
+
+      - alert: ContainerRestarting
+        expr: >-
+          increase(container_start_time_seconds{name!=""}[15m]) > 0
+          and on(name) container_last_seen{name!=""} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} restarted recently"
+
+      - alert: ExpectedContainerMissing
+        expr: >-
+          absent(container_last_seen{name="media-vpn_gluetun_1"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gluetun container is missing"
+          description: >-
+            The whole download and indexer stack shares its network namespace.
+
+  - name: certificates
+    rules:
+      - alert: TlsExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires in under 30 days"
+
+      - alert: TlsExpiringCritical
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 7
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires in under 7 days"

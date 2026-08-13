@@ -1,0 +1,38 @@
+# Read-only SMART access for the dashboard.
+#
+# Install with:
+#   sudo install -m 0440 -o root -g root \
+#       deploy/sudoers-smartctl /etc/sudoers.d/streamanator-dashboard-smartctl
+#   sudo visudo -c          # ALWAYS validate before logging out
+#
+# Then set SMARTCTL_SUDO=true in the dashboard .env and restart the service.
+#
+# WHY THIS IS NARROW:
+#   smartctl needs CAP_SYS_RAWIO to talk to the drives, so it must run as root.
+#   Rather than granting the dashboard user broad sudo, this permits exactly
+#   two invocations — a JSON dump of all attributes, and a health-only check —
+#   with no wildcards that could smuggle in a write.
+#
+#   smartctl CAN write to a drive (-t runs self-tests, -s changes settings,
+#   --set alters features). None of those forms are permitted below: only
+#   `-j -a` (JSON, all read-only data) and `-j -H` (health) are allowed, and
+#   the device argument is constrained to /dev/sd? so no arbitrary path can be
+#   passed.
+#
+# PREFERRED ALTERNATIVE:
+#   Run the smartctl_exporter container instead (deploy/monitoring-stack/).
+#   It keeps privilege inside a container with an explicit device allowlist and
+#   gives Prometheus history for free, which is what the CRC trend really needs.
+#   Use this sudoers file only if you are not deploying the exporter.
+
+Cmnd_Alias STREAMANATOR_SMART = \
+    /usr/sbin/smartctl -j -a /dev/sd[a-z], \
+    /usr/sbin/smartctl -j -H /dev/sd[a-z], \
+    /usr/sbin/smartctl -j -a /dev/nvme[0-9]n[0-9], \
+    /usr/sbin/smartctl -j -H /dev/nvme[0-9]n[0-9]
+
+arm ALL=(root) NOPASSWD: STREAMANATOR_SMART
+
+# Deny the dashboard user any smartctl form that could modify a device, even
+# if the aliases above are ever loosened by mistake.
+arm ALL=(root) !/usr/sbin/smartctl *-t*, !/usr/sbin/smartctl *-s*, !/usr/sbin/smartctl *--set*

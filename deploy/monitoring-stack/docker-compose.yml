@@ -1,0 +1,188 @@
+# Monitoring stack for streamanator.
+#
+# The 13 Aug 2026 survey found NO Prometheus, Grafana, cAdvisor or node_exporter
+# running on this host — only unused images. This compose file deploys the stack
+# the dashboard prefers as its telemetry source.
+#
+# Deploy:
+#   cd deploy/monitoring-stack
+#   cp .env.example .env      # set UNIFI_USER / UNIFI_PASS if using unpoller
+#   docker compose up -d      # NOTE: v2 syntax. Do not use docker-compose v1.
+#
+# Then set PROMETHEUS_URL=http://127.0.0.1:9090 in the dashboard .env.
+#
+# PORT CHOICES — verified free on this host on 13 Aug 2026:
+#   9090 Prometheus, 9100 node_exporter, 9101 cAdvisor, 9115 blackbox,
+#   9633 smartctl_exporter, 9130 unpoller, 3000 Grafana.
+#   cAdvisor is deliberately NOT on 8080: that port belongs to SABnzbd here,
+#   published by the gluetun container. The project README's assumption that
+#   8080 was cAdvisor was wrong.
+#
+# All services bind to 127.0.0.1 only. Nothing here should be reachable from
+# other VLANs, let alone the Internet.
+
+name: monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: monitoring-prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # 400 days matches the dashboard's history retention so long-window
+      # deltas and forecasts stay answerable from either source.
+      - "--storage.tsdb.retention.time=400d"
+      - "--storage.tsdb.retention.size=20GB"
+      - "--web.enable-lifecycle"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: monitoring-node-exporter
+    restart: unless-stopped
+    pid: host
+    ports:
+      - "127.0.0.1:9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      # mdadm gives the RAID member counts; hwmon gives temperatures;
+      # systemd gives failed-unit state without shelling out.
+      - "--collector.mdadm"
+      - "--collector.hwmon"
+      - "--collector.systemd"
+      - "--collector.processes"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($$|/)"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: monitoring-cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    ports:
+      # 9101, NOT 8080 — 8080 is SABnzbd on this host.
+      - "127.0.0.1:9101:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - "--housekeeping_interval=15s"
+      - "--docker_only=true"
+      - "--store_container_labels=false"
+
+  smartctl-exporter:
+    image: prometheuscommunity/smartctl-exporter:latest
+    container_name: monitoring-smartctl-exporter
+    restart: unless-stopped
+    # SMART requires raw device access. Confining it to this container is why
+    # it is preferred over granting the dashboard user sudo.
+    privileged: true
+    user: root
+    ports:
+      - "127.0.0.1:9633:9633"
+    volumes:
+      - /dev:/dev:ro
+    command:
+      - "--smartctl.path=/usr/sbin/smartctl"
+      # Rescan so a device that changes letter across a reboot is still found.
+      - "--smartctl.rescan=10m"
+      - "--web.listen-address=:9633"
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: monitoring-blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9115:9115"
+    volumes:
+      - ./blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+
+  # UniFi telemetry via unpoller.
+  #
+  # DISABLED FOR THIS NETWORK. unpoller authenticates with username and
+  # password against the controller's login API. The polling account here has
+  # email MFA enforced, so that login never completes — no role or permission
+  # change fixes it while MFA is on.
+  #
+  # Use the dashboard's own Integration API path instead: create an API key in
+  # the UniFi console and set UNIFI_CONTROLLER_URL / UNIFI_API_KEY in the
+  # dashboard .env. An API key bypasses the login flow entirely, so MFA stays
+  # enabled. See the README section "UniFi with MFA".
+  #
+  # Kept commented rather than merely disabled: `docker compose config`
+  # interpolates every service regardless of profile, so a required-variable
+  # reference here would fail validation of the whole file.
+  #
+  # If you ever add a local admin WITHOUT MFA, uncomment this block and set
+  # UNIFI_USER / UNIFI_PASS in .env.
+  #
+  # unpoller:
+  #   image: ghcr.io/unpoller/unpoller:latest
+  #   container_name: monitoring-unpoller
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:9130:9130"
+  #   environment:
+  #     UP_UNIFI_DEFAULT_URL: ${UNIFI_URL:-https://10.0.40.1}
+  #     UP_UNIFI_DEFAULT_USER: ${UNIFI_USER}
+  #     UP_UNIFI_DEFAULT_PASS: ${UNIFI_PASS}
+  #     UP_UNIFI_DEFAULT_VERIFY_SSL: "false"
+  #     UP_UNIFI_DEFAULT_SAVE_SITES: "true"
+  #     UP_UNIFI_DEFAULT_SAVE_DPI: "true"
+  #     UP_UNIFI_DEFAULT_SAVE_IDS: "true"
+  #     UP_UNIFI_DEFAULT_SAVE_EVENTS: "true"
+  #     UP_UNIFI_DEFAULT_SAVE_ALARMS: "true"
+  #     UP_PROMETHEUS_DISABLE: "false"
+  #     UP_PROMETHEUS_HTTP_LISTEN: "0.0.0.0:9130"
+  #     UP_INFLUXDB_DISABLE: "true"
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: monitoring-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Provisioning tree: the datasource (fixed uid) and the dashboard
+      # provider both mount read-only; the dashboard JSON mounts into the
+      # path the provider watches.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Land on the provisioned dashboard instead of an empty home.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/streamanator.json
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,111 @@
+# Prometheus scrape configuration for streamanator.
+#
+# Targets use host.docker.internal via the extra_hosts gateway alias, or the
+# container names on the shared compose network. Blackbox targets are the
+# live-verified endpoints from the 13 Aug 2026 survey.
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    host: streamanator
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance: streamanator
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          instance: streamanator
+
+  # Physical disk health. This is the highest-value addition: without it the
+  # WPV2E6LL CRC trend cannot be tracked at all.
+  - job_name: smartctl
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["smartctl-exporter:9633"]
+        labels:
+          instance: streamanator
+
+  # UniFi via unpoller — NOT deployed on this network. The polling account has
+  # email MFA enforced, which blocks unpoller's username/password login, so
+  # UniFi data comes from the dashboard's Integration API (API key) path
+  # instead. Uncomment only if a non-MFA local admin is ever added.
+  #
+  # - job_name: unifi
+  #   scrape_interval: 60s
+  #   static_configs:
+  #     - targets: ["unpoller:9130"]
+
+  # ------------------------------------------------------------------------
+  # Synthetic probes. A running container is not a working application — these
+  # ask each service a question and check the answer.
+  # ------------------------------------------------------------------------
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://10.0.40.100:2283/api/server/ping   # Immich
+          - http://10.0.40.100:6969/_stcore/health    # Sports Data Lab (NOT 8501)
+          - http://10.0.40.100:8501/_stcore/health    # AquaLog
+          - http://10.0.40.100:8081/ping              # Sonarr via gluetun
+          - http://10.0.40.100:8082/ping              # Radarr via gluetun
+          - http://10.0.40.100:8085/ping              # Prowlarr via gluetun
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Plex answers /identity with XML, and SABnzbd/qBittorrent return non-200
+  # without auth, so they use a TCP-connect module instead of an HTTP one.
+  - job_name: blackbox-tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - 10.0.40.100:32400   # Plex
+          - 10.0.40.100:8080    # SABnzbd via gluetun
+          - 10.0.40.100:8086    # qBittorrent via gluetun
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Internet reachability and latency.
+  - job_name: blackbox-icmp
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+          - 1.1.1.1
+          - 10.0.40.1
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
