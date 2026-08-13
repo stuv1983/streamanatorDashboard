@@ -214,11 +214,23 @@ class PrometheusConfig:
 
 @dataclass(frozen=True)
 class GrafanaConfig:
-    url: str = env_str("GRAFANA_URL", "")
+    #: Server-side address used for health checks. The bundled stack keeps
+    #: this on loopback so Grafana is not exposed to another VLAN.
+    url: str = field(default_factory=lambda: env_str("GRAFANA_URL", ""))
+    #: Optional address opened by the user's browser. This is deliberately
+    #: separate: 127.0.0.1 means the Linux host to a collector but the Windows
+    #: PC to a clicked link. Leave empty when using the documented SSH tunnel.
+    browser_url: str = field(
+        default_factory=lambda: env_str("GRAFANA_BROWSER_URL", "")
+    )
 
     @property
     def configured(self) -> bool:
         return bool(self.url)
+
+    @property
+    def link_url(self) -> str:
+        return self.browser_url or self.url
 
 
 @dataclass(frozen=True)

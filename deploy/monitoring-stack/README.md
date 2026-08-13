@@ -65,6 +65,11 @@ ssh -L 3000:127.0.0.1:3000 arm@10.0.40.100
 # then browse http://localhost:3000
 ```
 
+The dashboard's **Open in Grafana** buttons use that same browser-local URL.
+If Grafana is intentionally published through a trusted reverse proxy instead,
+set `GRAFANA_BROWSER_URL` to the proxy URL while keeping `GRAFANA_URL` on
+`http://127.0.0.1:3000` for server-side health checks.
+
 ## Probe targets
 
 `blackbox.yml` and `prometheus.yml` carry the live-verified endpoints from the

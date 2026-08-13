@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Sequence
+from urllib.parse import urlsplit
 
 import pandas as pd
 import streamlit as st
@@ -149,17 +151,52 @@ GRAFANA_PANELS: dict[str, int] = {
 }
 
 
+def _http_url_parts(url: str):
+    """Parse a safe HTTP(S) base URL, returning None for malformed input."""
+    try:
+        parts = urlsplit(url)
+        # Accessing .port performs validation and can itself raise for values
+        # such as `:not-a-port` or an out-of-range port.
+        _ = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        return None
+    return parts
+
+
 def grafana_url(panel: str | None = None) -> str:
     """URL of the provisioned dashboard, optionally focused on one panel."""
     settings = get_settings()
-    if not settings.grafana.configured:
+    base = settings.grafana.link_url.rstrip("/")
+    if _http_url_parts(base) is None:
         return ""
-    base = settings.grafana.url.rstrip("/")
     url = f"{base}/d/{GRAFANA_DASHBOARD_UID}/{GRAFANA_DASHBOARD_SLUG}"
     panel_id = GRAFANA_PANELS.get(panel or "")
     if panel_id is not None:
         url = f"{url}?viewPanel={panel_id}"
     return url
+
+
+def _grafana_link_needs_tunnel(url: str) -> bool:
+    """Whether a browser link names its own machine instead of the server."""
+    parts = _http_url_parts(url)
+    if parts is None:
+        return False
+    hostname = (parts.hostname or "").lower()
+    if hostname in {"localhost", "0.0.0.0", "::"}:
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def grafana_link(panel: str | None = None, label: str = "Open in Grafana") -> None:
@@ -176,7 +213,25 @@ def grafana_link(panel: str | None = None, label: str = "Open in Grafana") -> No
     url = grafana_url(panel)
     if not url:
         return
-    st.link_button(label, url, icon=":material/open_in_new:")
+    settings = get_settings()
+    needs_tunnel = _grafana_link_needs_tunnel(settings.grafana.link_url)
+    button_label = f"{label} (SSH tunnel)" if needs_tunnel else label
+    st.link_button(button_label, url, icon=":material/open_in_new:")
+    if needs_tunnel:
+        browser_parts = _http_url_parts(settings.grafana.link_url)
+        server_parts = _http_url_parts(settings.grafana.url)
+        browser_port = browser_parts.port if browser_parts else None
+        server_port = server_parts.port if server_parts else None
+        st.caption(
+            "Grafana is intentionally localhost-only on the Linux server. "
+            "Keep this PowerShell tunnel open before using the link:"
+        )
+        st.code(
+            "ssh -NT -o ExitOnForwardFailure=yes "
+            f"-L {browser_port or 3000}:127.0.0.1:{server_port or 3000} "
+            f"{settings.host.primary_user}@{settings.host.address}",
+            language="powershell",
+        )
 
 
 def chart_source_caption(samples) -> None:

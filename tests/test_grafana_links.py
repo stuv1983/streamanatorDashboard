@@ -9,8 +9,11 @@ looks like a broken dashboard rather than a broken link, so it went unnoticed.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
+import components.layout as layout
+from streamlit.testing.v1 import AppTest
 from components.layout import (
     GRAFANA_DASHBOARD_UID,
     GRAFANA_PANELS,
@@ -84,3 +87,67 @@ def test_no_page_hand_writes_a_dashboard_path():
         if '"/d/' in page.read_text(encoding="utf-8")
     ]
     assert not offenders, f"hand-written Grafana paths in: {offenders}"
+
+
+def _settings(
+    server_url: str = "http://127.0.0.1:3000",
+    browser_url: str = "",
+):
+    grafana = SimpleNamespace(
+        url=server_url,
+        browser_url=browser_url,
+        link_url=browser_url or server_url,
+        configured=bool(server_url),
+    )
+    host = SimpleNamespace(primary_user="arm", address="10.0.40.100")
+    return SimpleNamespace(grafana=grafana, host=host)
+
+
+def test_browser_url_is_separate_from_server_health_address(monkeypatch):
+    monkeypatch.setattr(
+        layout,
+        "get_settings",
+        lambda: _settings(browser_url="https://grafana.example.test"),
+    )
+
+    url = layout.grafana_url("raid")
+
+    assert url.startswith("https://grafana.example.test/d/")
+    assert "viewPanel=4" in url
+    assert "127.0.0.1" not in url
+
+
+def test_loopback_grafana_link_requires_a_tunnel():
+    assert layout._grafana_link_needs_tunnel("http://127.0.0.1:3000")
+    assert layout._grafana_link_needs_tunnel("http://localhost:3000")
+    assert layout._grafana_link_needs_tunnel("http://[::1]:3000")
+    assert not layout._grafana_link_needs_tunnel("https://grafana.example.test")
+    assert not layout._grafana_link_needs_tunnel("http://10.0.40.100:3000")
+
+
+def test_grafana_url_rejects_credentials_and_non_http_schemes(monkeypatch):
+    for unsafe in (
+        "javascript:alert(1)",
+        "ftp://grafana.example.test",
+        "http://admin:secret@grafana.example.test",
+        "http://grafana.example.test:not-a-port",
+        "https://grafana.example.test?redirect=elsewhere",
+    ):
+        monkeypatch.setattr(layout, "get_settings", lambda value=unsafe: _settings(browser_url=value))
+        assert layout.grafana_url() == ""
+
+
+def test_loopback_link_renders_the_windows_tunnel_command(monkeypatch):
+    monkeypatch.setattr(layout, "get_settings", _settings)
+    app = AppTest.from_string(
+        "from components.layout import grafana_link\n"
+        "grafana_link('raid', 'Open RAID dashboard in Grafana')\n"
+    ).run()
+
+    assert not app.exception
+    assert any("localhost-only" in caption.value for caption in app.caption)
+    assert any(
+        "ssh -NT -o ExitOnForwardFailure=yes "
+        "-L 3000:127.0.0.1:3000 arm@10.0.40.100" in block.value
+        for block in app.code
+    )

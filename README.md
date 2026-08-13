@@ -439,7 +439,8 @@ operator action. The dashboard itself never reads `/root/docker` at runtime.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PROMETHEUS_URL` | *(empty)* | Preferred telemetry source. Not deployed yet. |
-| `GRAFANA_URL` | *(empty)* | Enables "Open in Grafana" deep links. |
+| `GRAFANA_URL` | *(empty)* | Server-side Grafana address used for health checks. |
+| `GRAFANA_BROWSER_URL` | *(falls back to `GRAFANA_URL`)* | Optional browser-facing Grafana URL; leave empty when using the SSH tunnel. |
 | `BLACKBOX_URL` | *(empty)* | Continuous probing with history. |
 | `UNIFI_EXPORTER_URL` | *(empty)* | Gateway, WAN and VLAN telemetry. |
 | `DASHBOARD_PORT` | `8600` | Verified free on this host. |
