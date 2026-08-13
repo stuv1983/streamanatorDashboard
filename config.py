@@ -226,7 +226,7 @@ class GrafanaConfig:
 
     @property
     def configured(self) -> bool:
-        return bool(self.url)
+        return bool(self.link_url)
 
     @property
     def link_url(self) -> str:
@@ -448,6 +448,8 @@ def _build_service_endpoints() -> tuple[ServiceEndpoint, ...]:
     # rather than freezing on a survey date that has since gone stale.
     prometheus_url = env_str("PROMETHEUS_URL")
     grafana_url = env_str("GRAFANA_URL")
+    grafana_browser_url = env_str("GRAFANA_BROWSER_URL")
+    grafana_probe_url = grafana_url or grafana_browser_url
     _stack_hint = "Not deployed — run deploy/monitoring-stack/deploy.sh"
     return (
         ServiceEndpoint(
@@ -511,11 +513,17 @@ def _build_service_endpoints() -> tuple[ServiceEndpoint, ...]:
         ServiceEndpoint(
             "grafana",
             "Grafana",
-            grafana_url + "/api/health" if grafana_url else "",
+            grafana_probe_url.rstrip("/") + "/api/health"
+            if grafana_probe_url
+            else "",
             hosting=(
                 "Docker · monitoring stack · 127.0.0.1:3000"
                 if grafana_url
-                else _stack_hint
+                else (
+                    f"Monitoring stack via browser URL: {grafana_browser_url}"
+                    if grafana_browser_url
+                    else _stack_hint
+                )
             ),
         ),
         ServiceEndpoint(
@@ -701,8 +709,8 @@ class ExposedPort:
 #: intentional; anything detected-but-unexpected is a finding.
 EXTERNAL_PORTS: tuple[ExposedPort, ...] = (
     ExposedPort(32400, True, "Plex", "Remote access; attracts IDS/IPS scan traffic"),
-    ExposedPort(80, False, "Unknown", "Observed open; receiving service undocumented"),
-    ExposedPort(443, False, "Unknown", "Observed open; receiving service undocumented"),
+    ExposedPort(80, True, "HTTP", "Standard unencrypted web endpoint"),
+    ExposedPort(443, True, "HTTPS", "Standard TLS-encrypted web endpoint"),
 )
 
 #: Host ports that should be listening internally. Anything else listening on a

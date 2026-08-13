@@ -27,7 +27,11 @@ if str(PROJECT_ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from auth import session as auth_session  # noqa: E402
-from components.layout import refresh_controls, time_range_selector  # noqa: E402
+from components.layout import (  # noqa: E402
+    grafana_url,
+    refresh_controls,
+    time_range_selector,
+)
 from config import get_settings  # noqa: E402
 from core.runtime import (  # noqa: E402
     init_session_state,
@@ -179,10 +183,11 @@ with st.sidebar:
             ":gray[Read-only monitoring. Sign in under Admin for configuration "
             "and control actions.]"
         )
-    if config.grafana.configured:
+    sidebar_grafana_url = grafana_url()
+    if sidebar_grafana_url:
         st.link_button(
             "Grafana",
-            config.grafana.url,
+            sidebar_grafana_url,
             icon=":material/open_in_new:",
             width="stretch",
         )

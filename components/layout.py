@@ -172,6 +172,16 @@ def _http_url_parts(url: str):
     return parts
 
 
+def _http_url_port(url: str) -> int | None:
+    """Explicit or scheme-default port for a valid HTTP(S) URL."""
+    parts = _http_url_parts(url)
+    if parts is None:
+        return None
+    if parts.port is not None:
+        return parts.port
+    return 443 if parts.scheme == "https" else 80
+
+
 def grafana_url(panel: str | None = None) -> str:
     """URL of the provisioned dashboard, optionally focused on one panel."""
     settings = get_settings()
@@ -202,8 +212,8 @@ def _grafana_link_needs_tunnel(url: str) -> bool:
 def grafana_link(panel: str | None = None, label: str = "Open in Grafana") -> None:
     """Deep link into Grafana for detailed investigation.
 
-    Rendered only when GRAFANA_URL is set. The intended workflow is: spot it
-    here, investigate there.
+    Rendered when either the server or browser Grafana URL is set. The intended
+    workflow is: spot it here, investigate there.
 
     Takes a panel *key* rather than a URL path. The dashboard the monitoring
     stack provisions is a single page with numbered panels, so a path like
@@ -218,17 +228,17 @@ def grafana_link(panel: str | None = None, label: str = "Open in Grafana") -> No
     button_label = f"{label} (SSH tunnel)" if needs_tunnel else label
     st.link_button(button_label, url, icon=":material/open_in_new:")
     if needs_tunnel:
-        browser_parts = _http_url_parts(settings.grafana.link_url)
-        server_parts = _http_url_parts(settings.grafana.url)
-        browser_port = browser_parts.port if browser_parts else None
-        server_port = server_parts.port if server_parts else None
+        browser_port = _http_url_port(settings.grafana.link_url)
+        server_port = _http_url_port(settings.grafana.url) or browser_port
+        if browser_port is None or server_port is None:
+            return
         st.caption(
             "Grafana is intentionally localhost-only on the Linux server. "
             "Keep this PowerShell tunnel open before using the link:"
         )
         st.code(
             "ssh -NT -o ExitOnForwardFailure=yes "
-            f"-L {browser_port or 3000}:127.0.0.1:{server_port or 3000} "
+            f"-L {browser_port}:127.0.0.1:{server_port} "
             f"{settings.host.primary_user}@{settings.host.address}",
             language="powershell",
         )

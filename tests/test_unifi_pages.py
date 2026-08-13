@@ -149,3 +149,22 @@ def test_security_identifies_gluetun_control_api_as_expected(configured_pages):
     assert any(
         "Gluetun's HTTP control API" in message.value for message in app.info
     )
+
+
+def test_standard_web_ports_are_documented_not_flagged(configured_pages):
+    app = AppTest.from_file(
+        str(PACKAGE_ROOT / "app_pages" / "security.py"), default_timeout=120
+    ).run()
+
+    assert not app.exception
+    ports = {port.port: port for port in configured_pages.external_ports}
+    assert ports[80].expected and ports[80].service == "HTTP"
+    assert ports[443].expected and ports[443].service == "HTTPS"
+    assert any(
+        "External exposure" in expander.label and "0 need review" in expander.label
+        for expander in app.expander
+    )
+    assert not any("need review" in warning.value for warning in app.warning)
+    assert any(
+        "documented purpose" in message.value for message in app.success
+    )

@@ -1597,15 +1597,23 @@ def collect_security(
             )
         )
 
+    review_ports = [port for port in settings.external_ports if not port.expected]
     readings.append(
         Reading(
             key="security.exposure",
             label="External port exposure",
-            value=f"{sum(1 for p in settings.external_ports if p.expected)} expected",
-            status=Status.INFO,
+            value=(
+                f"{len(review_ports)} need review"
+                if review_ports
+                else f"{len(settings.external_ports)} intentional"
+            ),
+            status=Status.WARNING if review_ports else Status.INFO,
             detail=(
-                "Ports 80 and 443 were previously observed open from the Internet "
-                "but their receiving service is undocumented. Verify in UniFi."
+                "Declared Internet-facing ports needing review: "
+                + ", ".join(str(port.port) for port in review_ports)
+                + ". Verify them in UniFi."
+                if review_ports
+                else "All declared Internet-facing ports have a documented purpose."
             ),
             source="config",
             extra={"ports": settings.external_ports},

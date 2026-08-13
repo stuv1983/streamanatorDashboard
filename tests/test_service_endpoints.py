@@ -23,7 +23,7 @@ import config
 def _env(**overrides):
     saved = dict(config._ENV)
     try:
-        for key in ("PROMETHEUS_URL", "GRAFANA_URL"):
+        for key in ("PROMETHEUS_URL", "GRAFANA_URL", "GRAFANA_BROWSER_URL"):
             config._ENV.pop(key, None)
         for key, value in overrides.items():
             if value is not None:
@@ -51,6 +51,13 @@ def test_deployed_shows_the_live_location():
         assert "NOT DEPLOYED" not in eps["prometheus"].hosting.upper()
         assert eps["grafana"].url == "http://127.0.0.1:3000/api/health"
         assert "3000" in eps["grafana"].hosting
+
+
+def test_browser_only_grafana_url_is_a_health_probe_fallback():
+    with _env(GRAFANA_BROWSER_URL="https://grafana.example.test") as eps:
+        assert eps["grafana"].url == "https://grafana.example.test/api/health"
+        assert "browser URL" in eps["grafana"].hosting
+        assert "deploy.sh" not in eps["grafana"].hosting
 
 
 def test_no_endpoint_carries_the_frozen_survey_date():

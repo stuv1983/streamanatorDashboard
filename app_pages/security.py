@@ -233,10 +233,17 @@ with st.expander(
     st.dataframe(pd.DataFrame(exposure_rows), hide_index=True, width="stretch")
 
     if review_ports:
+        port_list = ", ".join(str(port.port) for port in review_ports)
+        noun = "Port" if len(review_ports) == 1 else "Ports"
         st.warning(
-            "TCP 80 and 443 need review. Confirm the receiving service in UniFi "
-            "port forwards, NAT rules, UPnP mappings, and the reverse proxy.",
+            f"{noun} {port_list} need review. Confirm each receiving service in "
+            "UniFi port forwards, NAT rules, UPnP mappings, and the reverse proxy.",
             icon=":material/warning:",
+        )
+    else:
+        st.success(
+            "Every declared Internet-facing port has a documented purpose.",
+            icon=":material/check_circle:",
         )
     st.info(
         "TCP 32400 (Plex) is Internet-facing and has previously attracted IDS/IPS "

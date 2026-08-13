@@ -269,7 +269,7 @@ upgrades it.
 | Inter-VLAN traffic visualisation | The spec says not to manufacture flow data UniFi does not expose. It does not expose it here. |
 | Gateway CPU/RAM/temperature, WAN throughput | Same — UniFi only. |
 | IDS/IPS event table | Same. An empty table would read as "no intrusions", which is not what "cannot see" means. |
-| External port detection | No outbound scanning is performed. The Security page shows a declared inventory to be reconciled against UniFi's port forwards, and flags 80/443 as needing review since their receiving service is undocumented. |
+| External port detection | No outbound scanning is performed. The Security page shows a declared inventory to be reconciled against UniFi's port forwards; 80/443 are documented as the standard HTTP/HTTPS entry points. |
 
 ---
 

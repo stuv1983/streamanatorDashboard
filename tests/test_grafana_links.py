@@ -9,10 +9,11 @@ looks like a broken dashboard rather than a broken link, so it went unnoticed.
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import components.layout as layout
+from config import GrafanaConfig
 from streamlit.testing.v1 import AppTest
 from components.layout import (
     GRAFANA_DASHBOARD_UID,
@@ -80,13 +81,28 @@ def test_pages_only_use_known_panel_keys():
 
 def test_no_page_hand_writes_a_dashboard_path():
     """The old failure mode: a literal `/d/...` path in a page."""
-    pages = (Path(__file__).resolve().parents[1] / "app_pages").glob("*.py")
+    root = Path(__file__).resolve().parents[1]
+    pages = [root / "app.py", *sorted((root / "app_pages").glob("*.py"))]
     offenders = [
         page.name
         for page in pages
         if '"/d/' in page.read_text(encoding="utf-8")
     ]
     assert not offenders, f"hand-written Grafana paths in: {offenders}"
+
+
+def test_entry_point_uses_the_validated_browser_link_builder():
+    source = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert "config.grafana.url" not in source
+    assert "sidebar_grafana_url = grafana_url()" in source
+
+
+def test_browser_url_alone_counts_as_configured():
+    grafana = GrafanaConfig(url="", browser_url="https://grafana.example.test")
+
+    assert grafana.configured
 
 
 def _settings(
@@ -149,5 +165,23 @@ def test_loopback_link_renders_the_windows_tunnel_command(monkeypatch):
     assert any(
         "ssh -NT -o ExitOnForwardFailure=yes "
         "-L 3000:127.0.0.1:3000 arm@10.0.40.100" in block.value
+        for block in app.code
+    )
+
+
+def test_tunnel_uses_scheme_default_ports(monkeypatch):
+    monkeypatch.setattr(
+        layout,
+        "get_settings",
+        lambda: _settings(server_url="http://localhost"),
+    )
+    app = AppTest.from_string(
+        "from components.layout import grafana_link\n"
+        "grafana_link('raid', 'Open RAID dashboard in Grafana')\n"
+    ).run()
+
+    assert not app.exception
+    assert any(
+        "-L 80:127.0.0.1:80 arm@10.0.40.100" in block.value
         for block in app.code
     )
