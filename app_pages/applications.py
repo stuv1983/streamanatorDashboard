@@ -16,7 +16,7 @@ from components.layout import health_table, page_header, read_only_notice
 from components.theme import style
 from config import TIME_RANGES, get_settings
 from core.collector import M_DB_SIZE
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
 from core.status import Status
 from services.sportsdb import verify_database
 from utils.formatting import format_timestamp, human_age, human_bytes, human_duration
@@ -198,7 +198,7 @@ else:
 
             # Growth from the history store — a database that stops growing is
             # the actual signal, not its absolute size.
-            samples = history_series(
+            samples = trend_series(
                 M_DB_SIZE, {"db": database.key}, max(range_seconds, 7 * 86400)
             )
             if len(samples) >= 2:

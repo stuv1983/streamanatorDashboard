@@ -264,6 +264,108 @@ def history_series(
     )
 
 
+# ---------------------------------------------------------------------------
+# Trends
+#
+# The local history store was written for a host with no Prometheus: a 60s
+# sampler that starts accruing at install time. Where Prometheus *is* deployed
+# it holds the same measurements at 15s resolution for 400 days, so it is the
+# better answer to "what has this been doing" — but only for the metrics it
+# genuinely covers, and only while it is actually up.
+#
+# `trend_series` picks per call rather than globally, because coverage differs
+# per metric: host CPU comes from node_exporter, application database growth
+# has no exporter at all, and both appear on the same page.
+# ---------------------------------------------------------------------------
+
+
+class Trend(list):
+    """Chart samples that remember where they came from.
+
+    A `list` subclass so it drops into everything that already consumes a
+    series — `len()`, truthiness, iteration, slicing, DataFrame construction —
+    while still letting a page caption say which source is being plotted.
+    Attribution matters here: "no history yet" and "Prometheus is down" look
+    identical on an empty chart, and only one of them is worth acting on.
+    """
+
+    __slots__ = ("source",)
+
+    def __init__(
+        self, samples: list[tuple[float, float]] = (), source: str = "history"
+    ) -> None:
+        super().__init__(samples)
+        #: "prometheus", "history", or "none" when neither had anything.
+        self.source = source if samples else "none"
+
+
+@st.cache_data(ttl="10m", show_spinner=False)
+def prometheus_metric_names() -> frozenset[str]:
+    """Prometheus' metric inventory, cached.
+
+    Every trend checks this before issuing a query. Uncached it would be one
+    full label-values request per chart per render, which is the kind of thing
+    that turns a dashboard into a load source.
+    """
+    client = prometheus_client()
+    if client is None or not client.available():
+        return frozenset()
+    try:
+        return frozenset(client.metric_names())
+    except Exception as exc:  # noqa: BLE001 - inventory is best-effort
+        log.warning("Could not read Prometheus metric inventory: %s", exc)
+        return frozenset()
+
+
+def _prometheus_trend(
+    metric: str, labels: dict[str, str] | None, window_seconds: float
+) -> list[tuple[float, float]]:
+    """Range-query Prometheus for a metric, or [] if it cannot answer.
+
+    Every failure path returns [] rather than raising: an unmapped metric, a
+    missing exporter, a query error and a genuinely empty result all mean the
+    same thing to the caller, which is "fall back to the local store".
+    """
+    client = prometheus_client()
+    if client is None or not client.available():
+        return []
+
+    from queries import promql_for
+
+    query = promql_for(metric, labels)
+    if query is None:
+        return []
+    if query.requires not in prometheus_metric_names():
+        return []
+
+    try:
+        results = client.query_range_over(query.promql, window_seconds)
+    except Exception as exc:  # noqa: BLE001 - a chart must not break a page
+        log.debug("Prometheus trend for %s failed: %s", metric, exc)
+        return []
+    if not results:
+        # A label that does not exist on this exporter build (serials are the
+        # likely case) matches nothing. That is a fallback, not an error.
+        return []
+    # The queries are written to aggregate to one series; if a future one does
+    # not, plot the best-populated rather than an arbitrary first.
+    return max(results, key=lambda result: len(result.samples)).samples
+
+
+def trend_series(
+    metric: str, labels: dict[str, str] | None, window_seconds: float
+) -> Trend:
+    """Samples for a chart, from Prometheus when it can answer, else locally.
+
+    Drop-in for `history_series` — the return value is a list of
+    `(timestamp, value)` pairs — with `.source` naming the origin.
+    """
+    samples = _prometheus_trend(metric, labels, window_seconds)
+    if samples:
+        return Trend(samples, "prometheus")
+    return Trend(history_series(metric, labels, window_seconds), "history")
+
+
 def init_session_state() -> None:
     """Initialise shared session state in one place."""
     from config import DEFAULT_REFRESH_SECONDS, DEFAULT_TIME_RANGE

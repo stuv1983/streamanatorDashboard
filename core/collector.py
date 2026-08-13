@@ -963,7 +963,71 @@ def collect_network(
             )
         )
     else:
-        raw["gateway_status"] = unifi.get_gateway_status(settings.unifi, router.prometheus)
+        # One inventory fetch feeds both the gateway panel and the device list.
+        # Statistics are a request per device, so fetching twice would double
+        # the controller traffic for the same answer.
+        devices, devices_error = unifi.get_devices(settings.unifi)
+        raw["unifi_devices"] = devices
+        raw["unifi_devices_error"] = devices_error
+        raw["gateway_status"] = unifi.get_gateway_status(
+            settings.unifi, router.prometheus, devices=devices
+        )
+
+        # Switches and access points are infrastructure: when one drops, wifi
+        # or a whole switched segment goes with it. That is a network fault,
+        # not a footnote, so each gets a reading that feeds the health score.
+        for device in devices:
+            if device.role == "gateway":
+                continue  # already covered by the gateway panel
+            label = device.name or device.model or device.mac
+            if device.online:
+                detail = f"{device.model} at {device.ip_address or 'unknown address'}"
+                if device.uptime_seconds:
+                    detail += f", up {human_duration(device.uptime_seconds)}"
+                readings.append(
+                    Reading(
+                        key=f"network.unifi.{device.mac or device.device_id}",
+                        label=f"{label} ({device.role})",
+                        value=device.state.title(),
+                        status=Status.HEALTHY,
+                        detail=detail,
+                        source="unifi",
+                        extra={"device": device},
+                    )
+                )
+            else:
+                alerts.append(
+                    Alert(
+                        key=f"network.unifi.{device.mac or device.device_id}",
+                        status=Status.CRITICAL,
+                        title=f"UniFi {device.role} offline: {label}",
+                        component=f"UniFi {device.role}",
+                        detail=(
+                            f"{device.model} reports state "
+                            f"{device.state or 'unknown'}."
+                        ),
+                        current_value=device.state or "unknown",
+                        probable_cause=(
+                            "Lost power or PoE, an unplugged uplink, or a "
+                            "firmware update that has not come back."
+                        ),
+                        recommended_action=(
+                            f"Check the PoE port feeding {label} on the switch, "
+                            f"then its adoption state in the UniFi console."
+                        ),
+                    )
+                )
+                readings.append(
+                    Reading(
+                        key=f"network.unifi.{device.mac or device.device_id}",
+                        label=f"{label} ({device.role})",
+                        value=device.state.title() or "Offline",
+                        status=Status.CRITICAL,
+                        detail=f"{device.model} is not reporting to the controller.",
+                        source="unifi",
+                        extra={"device": device},
+                    )
+                )
 
     raw["interface_rates"] = network.get_interface_rates()
 

@@ -133,7 +133,7 @@ fi
 [ -x .venv/bin/python ] && echo "VENV yes" || echo "VENV no"
 echo "MANIFEST"
 find . -type f \\
-    -not -path './.venv/*' -not -path './var/*' -not -path './.git/*' \\
+    -not -path './.venv*' -not -path './var/*' -not -path './.git/*' \\
     -not -path '*/__pycache__/*' -not -path './.pytest_cache/*' \\
     -not -path './.ruff_cache/*' -not -path './.mypy_cache/*' \\
     -not -name '*.pyc' -not -name '*.log' \\
@@ -180,7 +180,7 @@ else
     # unless --prune is given, and never anything under var/ or .venv/.
     awk -F '\t' 'NR==FNR { l[$0]=1; next } !($2 in l) { print $2 }' \
         "$TMP/local.list" "$TMP/remote.man" \
-        | grep -v -E '^(var/|\.venv/|\.env($|\.))' | sort > "$TMP/deletions.list"
+        | grep -v -E '^(var/|\.venv|\.env($|\.))' | sort > "$TMP/deletions.list"
 
     CHANGED_COUNT=$(wc -l < "$TMP/changed.list" | tr -d ' ')
     DELETE_COUNT=$(wc -l < "$TMP/deletions.list" | tr -d ' ')
@@ -240,7 +240,7 @@ BACKUP_DIR="var/deploy-backups"
 mkdir -p "$BACKUP_DIR"
 
 TAR_EXCLUDES=(
-    '--exclude=./.venv' '--exclude=./var' '--exclude=./.git'
+    '--exclude=./.venv*' '--exclude=./var' '--exclude=./.git'
     '--exclude=__pycache__' '--exclude=./.pytest_cache'
     '--exclude=./.ruff_cache' '--exclude=./.mypy_cache'
     '--exclude=./.env' '--exclude=*.pyc' '--exclude=*.log'
@@ -291,7 +291,7 @@ if [ "$MODE" = "rollback" ]; then
     [ -n "$LATEST" ] || fail "no backup found in $REMOTE_DIR/$BACKUP_DIR"
     info "restoring $LATEST"
     tar xzf "$LATEST" -C . || fail "restore failed"
-    find . -path ./.venv -prune -o -name __pycache__ -type d -print0 2>/dev/null \
+    find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
         | xargs -0 -r rm -rf
     restart_service || fail "restart failed after rollback"
     health_check || { show_logs; fail "service unhealthy after rollback"; }
@@ -323,14 +323,14 @@ if [ -s "$STAGE/deletions.list" ]; then
     info "pruning removed files"
     while IFS= read -r f; do
         case "$f" in
-            ''|.env|var/*|.venv/*|../*|/*) warn "skipping $f"; continue ;;
+            ''|.env|var/*|.venv*|../*|/*) warn "skipping $f"; continue ;;
         esac
         rm -f -- "$f" && echo "     deleted $f"
     done < "$STAGE/deletions.list"
     # Drop directories the prune emptied, but never the project root and never
     # anything git, the venv or the runtime state owns.
     find . -mindepth 1 -type d -empty \
-        -not -path './.venv' -not -path './.venv/*' \
+        -not -path './.venv*' \
         -not -path './var' -not -path './var/*' \
         -not -path './.git' -not -path './.git/*' \
         -delete 2>/dev/null
@@ -339,7 +339,7 @@ fi
 # Bytecode caches are keyed on source mtime, and a deployed file carries its
 # mtime from the workstation — which can be older than the .pyc the server
 # already built. Clearing them removes any chance of running stale code.
-find . -path ./.venv -prune -o -name __pycache__ -type d -print0 2>/dev/null \
+find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
     | xargs -0 -r rm -rf
 
 if [ "$DEPS_CHANGED" = "true" ]; then
@@ -367,7 +367,7 @@ fi
 warn "deploy failed verification — rolling back to $BACKUP"
 show_logs
 tar xzf "$BACKUP" -C . || fail "ROLLBACK FAILED — server left in a bad state, backup: $BACKUP"
-find . -path ./.venv -prune -o -name __pycache__ -type d -print0 2>/dev/null \
+find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
     | xargs -0 -r rm -rf
 restart_service
 if health_check; then

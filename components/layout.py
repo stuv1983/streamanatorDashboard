@@ -120,17 +120,78 @@ def time_range_selector(key: str = "time_range", location=None) -> tuple[str, in
     return chosen, mapping[chosen]
 
 
-def grafana_link(dashboard_path: str, label: str = "Open in Grafana") -> None:
+#: UID of the dashboard provisioned by `deploy/monitoring-stack`. Deep links
+#: are built from this rather than hand-written paths, because a path that does
+#: not resolve produces a Grafana 404 that looks exactly like a broken
+#: dashboard — and nothing in the dashboard's own tests would catch it.
+GRAFANA_DASHBOARD_UID = "streamanator-overview"
+GRAFANA_DASHBOARD_SLUG = "streamanator-host-and-services"
+
+#: Panel ids within that dashboard, so a link can open the relevant graph
+#: rather than the top of a fourteen-panel page. Kept in step with
+#: `deploy/monitoring-stack/grafana/dashboards/streamanator.json` by
+#: `tests/test_grafana_links.py`.
+GRAFANA_PANELS: dict[str, int] = {
+    "cpu": 1,
+    "memory": 2,
+    "load": 3,
+    "raid": 4,
+    "cpu_by_mode": 5,
+    "memory_detail": 6,
+    "filesystem": 7,
+    "disk_io": 8,
+    "smart_crc": 9,
+    "smart_temperature": 10,
+    "probes": 11,
+    "probe_latency": 12,
+    "container_cpu": 13,
+    "container_memory": 14,
+}
+
+
+def grafana_url(panel: str | None = None) -> str:
+    """URL of the provisioned dashboard, optionally focused on one panel."""
+    settings = get_settings()
+    if not settings.grafana.configured:
+        return ""
+    base = settings.grafana.url.rstrip("/")
+    url = f"{base}/d/{GRAFANA_DASHBOARD_UID}/{GRAFANA_DASHBOARD_SLUG}"
+    panel_id = GRAFANA_PANELS.get(panel or "")
+    if panel_id is not None:
+        url = f"{url}?viewPanel={panel_id}"
+    return url
+
+
+def grafana_link(panel: str | None = None, label: str = "Open in Grafana") -> None:
     """Deep link into Grafana for detailed investigation.
 
     Rendered only when GRAFANA_URL is set. The intended workflow is: spot it
     here, investigate there.
+
+    Takes a panel *key* rather than a URL path. The dashboard the monitoring
+    stack provisions is a single page with numbered panels, so a path like
+    `/d/raid/raid-health` — which is what these links used to be — points at a
+    dashboard that was never created.
     """
-    settings = get_settings()
-    if not settings.grafana.configured:
+    url = grafana_url(panel)
+    if not url:
         return
-    url = f"{settings.grafana.url.rstrip('/')}{dashboard_path}"
     st.link_button(label, url, icon=":material/open_in_new:")
+
+
+def chart_source_caption(samples) -> None:
+    """Name the source under a trend chart.
+
+    An empty chart has two very different causes — nothing collected yet, or
+    Prometheus unreachable — and a chart drawn from 15s Prometheus data means
+    something different from one drawn from 60s local samples. Both are worth a
+    line of small text under the plot.
+    """
+    source = getattr(samples, "source", "history")
+    if source == "prometheus":
+        st.caption(":gray[Source: Prometheus — 15s resolution, 400 day retention]")
+    elif source == "history":
+        st.caption(":gray[Source: local history store — 60s samples since install]")
 
 
 def health_table(readings: Sequence[Reading], caption: str = "") -> None:

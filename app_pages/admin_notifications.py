@@ -21,6 +21,7 @@ from services.notifications import (
     WEEKDAY_LABELS,
     NotificationPreferences,
     NotificationStoreError,
+    build_test_message,
     parse_recipients,
     send_email,
     validate_email_address,
@@ -169,7 +170,8 @@ st.markdown("### What should be emailed")
 st.caption(
     "A fault is sent once when it appears or escalates. It is not repeated on "
     "every poll. If recovery mail is enabled, a second message is sent when the "
-    "fault clears. Saving an enabled subscription starts an immediate check."
+    "fault clears. Weekly reports and alerts use a branded HTML template with "
+    "a plain-text fallback. Saving an enabled subscription starts an immediate check."
 )
 
 with st.form("notification_preferences"):
@@ -275,12 +277,15 @@ with test_col:
             live_settings = get_settings()
             if not live_preferences.recipients:
                 raise ValueError("Save at least one recipient first.")
+            subject, text_body, html_body = build_test_message(
+                live_settings.host.hostname
+            )
             result = send_email(
                 live_settings.email,
                 live_preferences.recipients,
-                f"[{live_settings.host.hostname}] Test email",
-                "Email delivery from the Streamanator Dashboard is working.",
-                "<p><strong>Email delivery from the Streamanator Dashboard is working.</strong></p>",
+                subject,
+                text_body,
+                html_body,
             )
             audit.record(
                 "notifications.test",

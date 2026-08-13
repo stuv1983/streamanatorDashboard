@@ -17,6 +17,9 @@ from services.notifications import (
     NotificationPreferences,
     NotificationStore,
     NotificationStoreError,
+    _alert_message,
+    _weekly_message,
+    build_test_message,
     parse_recipients,
     send_email,
 )
@@ -164,6 +167,51 @@ def test_smtp_connection_is_authenticated_sent_and_closed(monkeypatch):
     assert events[-1] == "closed"
     assert ("login", "sender@example.com", "abcdefghijklmnop") in events
     assert ("send", "admin@example.com", "Test subject") in events
+
+
+def test_branded_test_message_is_self_contained_and_has_text_fallback():
+    subject, text_body, html_body = build_test_message("test-host")
+
+    assert subject == "[test-host] Test email"
+    assert "is working" in text_body
+    assert html_body.startswith("<!doctype html>")
+    assert "Streamanator Dashboard" in html_body
+    assert "DELIVERY TEST" in html_body
+    assert 'role="presentation"' in html_body
+    assert "<img" not in html_body
+    assert "http://" not in html_body and "https://" not in html_body
+
+
+def test_alert_template_escapes_collector_content():
+    alert = Alert(
+        key="server.test",
+        status=Status.CRITICAL,
+        title="<script>alert(1)</script>",
+        component="Host & server",
+        detail='<img src=x onerror="alert(1)">',
+        recommended_action="Check A > B",
+    )
+
+    _, text_body, html_body = _alert_message("host<1>", [alert], [])
+
+    assert "<script>" in text_body  # Plain text is deliberately not HTML encoded.
+    assert "<script>" not in html_body
+    assert "<img src=x" not in html_body
+    assert "&lt;script&gt;" in html_body
+    assert "Host &amp; server" in html_body
+    assert "host&lt;1&gt;" in html_body
+
+
+def test_weekly_template_contains_visual_summary_and_plain_equivalent():
+    now = datetime(2026, 8, 17, 9, tzinfo=timezone.utc)
+    subject, text_body, html_body = _weekly_message(_settings().host.hostname, _snapshot(), now)
+
+    assert "Weekly health report" in subject
+    assert "Overall: HEALTHY - 100/100" in text_body
+    assert "HEALTH SCORE" in html_body
+    assert "COMPONENT HEALTH" in html_body
+    assert "No active findings" in html_body
+    assert "No recent changes" in html_body
 
 
 def test_alert_is_sent_once_then_recovery_allows_a_future_incident(tmp_path):

@@ -6,10 +6,16 @@ import streamlit as st
 
 from components.cards import metric_card, readings_grid
 from components.charts import threshold_series, time_series, to_table
-from components.layout import grafana_link, health_table, page_header, read_only_notice
+from components.layout import (
+    chart_source_caption,
+    grafana_link,
+    health_table,
+    page_header,
+    read_only_notice,
+)
 from config import TIME_RANGES, get_settings
 from core.collector import M_CPU, M_IOWAIT, M_MEM_AVAIL
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
 from health.thresholds import get_thresholds
 from services.system import get_unit_logs, get_unit_state
 from utils.formatting import human_bytes, human_duration
@@ -111,7 +117,7 @@ left, right = st.columns(2)
 with left:
     with st.container(border=True):
         st.markdown("**CPU utilisation**")
-        samples = history_series(M_CPU, None, range_seconds)
+        samples = trend_series(M_CPU, None, range_seconds)
         chart = threshold_series(
             samples,
             "CPU",
@@ -123,20 +129,22 @@ with left:
             st.caption("No history yet.")
         else:
             st.altair_chart(chart, width="stretch")
+            chart_source_caption(samples)
 
     with st.container(border=True):
         st.markdown("**Memory available**")
-        samples = history_series(M_MEM_AVAIL, None, range_seconds)
+        samples = trend_series(M_MEM_AVAIL, None, range_seconds)
         chart = time_series(samples, "Available", " (%)", area=True)
         if chart is None:
             st.caption("No history yet.")
         else:
             st.altair_chart(chart, width="stretch")
+            chart_source_caption(samples)
 
 with right:
     with st.container(border=True):
         st.markdown("**iowait**")
-        samples = history_series(M_IOWAIT, None, range_seconds)
+        samples = trend_series(M_IOWAIT, None, range_seconds)
         chart = threshold_series(
             samples,
             "iowait",
@@ -148,6 +156,7 @@ with right:
             st.caption("No history yet.")
         else:
             st.altair_chart(chart, width="stretch")
+            chart_source_caption(samples)
             with st.expander("Table view"):
                 st.dataframe(to_table(samples, "iowait"), hide_index=True, width="stretch")
 
@@ -219,7 +228,7 @@ with st.expander("Watched units"):
         )
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
-grafana_link("/d/node/node-exporter-full", "Open host dashboard in Grafana")
+grafana_link("cpu", "Open host dashboard in Grafana")
 
 st.divider()
 health_table(server.readings if server else [])

@@ -89,6 +89,9 @@ PROVIDED_BY_INTEGRATION_API: tuple[str, ...] = (
 #: What it does not provide. Listed so these stay visibly unavailable rather
 #: than quietly missing.
 NOT_PROVIDED_BY_INTEGRATION_API: tuple[str, ...] = (
+    "Per-device client counts — the device statistics payload carries CPU, "
+    "memory, load, uptime, uplink rates and radio retries, but no count of "
+    "associated clients, so access points show none",
     "IDS/IPS alarm history (legacy API only)",
     "Per-VLAN firewall hit, drop and block counters — the API exposes the "
     "rules themselves, but not how many times each has matched",
@@ -96,6 +99,16 @@ NOT_PROVIDED_BY_INTEGRATION_API: tuple[str, ...] = (
 )
 
 _INTEGRATION_BASE = "/proxy/network/integration/v1"
+
+# Device classification. Types are what the Integration API reports in
+# `type`; the model prefixes are the fallback for firmware that leaves it
+# empty. Tuples, because `str.startswith` accepts one directly.
+_GATEWAY_TYPES = frozenset({"UGW", "UDM", "UXG", "UCG"})
+_GATEWAY_MODELS = ("UDM", "UXG", "UCG", "UDR", "USG")
+_SWITCH_TYPES = frozenset({"USW", "SWITCH"})
+_SWITCH_MODELS = ("US", "USW", "USL", "FLEX")
+_AP_TYPES = frozenset({"UAP", "AP"})
+_AP_MODELS = ("UAP", "U6", "U7", "U5", "UWB", "UAP-AC")
 
 
 @dataclass
@@ -127,6 +140,23 @@ class GatewayStatus:
     checked_at: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True)
+class RadioStats:
+    """One radio on an access point."""
+
+    frequency_ghz: float
+    tx_retries_percent: float | None = None
+
+    @property
+    def band(self) -> str:
+        """The band as people refer to it, not as the API reports it."""
+        if self.frequency_ghz >= 5.9:
+            return "6 GHz"
+        if self.frequency_ghz >= 4.9:
+            return "5 GHz"
+        return "2.4 GHz"
+
+
 @dataclass
 class UnifiDevice:
     """One UniFi device (gateway, switch or access point)."""
@@ -143,10 +173,41 @@ class UnifiDevice:
     memory_percent: float | None = None
     uplink_rx_bps: float | None = None
     uplink_tx_bps: float | None = None
+    firmware_version: str = ""
+    firmware_updatable: bool = False
+    load_1m: float | None = None
+    #: Per-radio transmit retry percentage, access points only. High retries
+    #: mean an RF problem — interference, or clients at the edge of range —
+    #: which nothing else on this dashboard would show.
+    radios: tuple[RadioStats, ...] = ()
 
     @property
     def online(self) -> bool:
         return self.state.upper() == "ONLINE"
+
+    @property
+    def role(self) -> str:
+        """Gateway, switch, access point, or a plain device when unclear.
+
+        Derived from the reported type first and the model string second: the
+        Integration API's `type` field is authoritative where it is populated,
+        but comes back empty on some firmware versions, and a dashboard that
+        cannot tell a switch from an AP is not much use.
+
+        Order matters — the gateway test runs first because `USG` would
+        otherwise be caught by the `US` switch prefix.
+        """
+        kind = self.device_type.upper()
+        model = self.model.upper()
+        if kind in _GATEWAY_TYPES or any(tag in model for tag in _GATEWAY_MODELS):
+            return "gateway"
+        if kind in _SWITCH_TYPES or model.startswith(_SWITCH_MODELS) or "SWITCH" in model:
+            return "switch"
+        # Modern AP model names carry no "AP" at all (U6-Pro, U7-Pro), so the
+        # generation prefixes are matched explicitly rather than by substring.
+        if kind in _AP_TYPES or model.startswith(_AP_MODELS):
+            return "access point"
+        return "device"
 
 
 @dataclass
@@ -353,6 +414,8 @@ def _fetch_devices(
             ip_address=str(entry.get("ipAddress", "")),
             state=str(entry.get("state", "")),
             device_type=str(entry.get("type", "")),
+            firmware_version=str(entry.get("firmwareVersion", "")),
+            firmware_updatable=bool(entry.get("firmwareUpdatable", False)),
         )
         # Per-device statistics are a second call; only made for devices that
         # are actually online, to keep the request count down.
@@ -367,6 +430,8 @@ def _fetch_devices(
                 uplink = stats.get("uplink") or {}
                 device.uplink_rx_bps = _to_float(uplink.get("rxRateBps"))
                 device.uplink_tx_bps = _to_float(uplink.get("txRateBps"))
+                device.load_1m = _to_float(stats.get("loadAverage1Min"))
+                device.radios = _radios(stats)
         devices.append(device)
     return tuple(devices), ""
 
@@ -382,11 +447,20 @@ def get_devices(config) -> tuple[list[UnifiDevice], str]:
     return list(devices), error
 
 
-def get_gateway_status(config, prometheus_client=None, timeout: float = 8.0) -> GatewayStatus:
+def get_gateway_status(
+    config,
+    prometheus_client=None,
+    timeout: float = 8.0,
+    devices: list[UnifiDevice] | None = None,
+) -> GatewayStatus:
     """Gateway health, preferring the Integration API.
 
     Falls back to unpoller metrics in Prometheus when those are present, which
     supports a mixed setup, but the API-key path is the one that works with MFA.
+
+    `devices` lets a caller that has already fetched the inventory pass it in.
+    Each fetch is one request per device for statistics, so re-fetching it here
+    would double the controller traffic on every collection.
     """
     status = GatewayStatus()
     available = availability(config)
@@ -396,7 +470,9 @@ def get_gateway_status(config, prometheus_client=None, timeout: float = 8.0) -> 
         return status
 
     if config.controller_url and config.api_key:
-        devices, error = get_devices(config)
+        error = ""
+        if devices is None:
+            devices, error = get_devices(config)
         if error:
             status.error = error
             return status
@@ -422,13 +498,35 @@ def get_gateway_status(config, prometheus_client=None, timeout: float = 8.0) -> 
     return _gateway_from_prometheus(status, prometheus_client)
 
 
+def _radios(stats: dict[str, Any]) -> tuple[RadioStats, ...]:
+    """Radio statistics from an access point's `interfaces.radios`.
+
+    Absent on switches and gateways, which is why this returns an empty tuple
+    rather than raising — the caller renders radios only when there are any.
+    """
+    interfaces = stats.get("interfaces")
+    if not isinstance(interfaces, dict):
+        return ()
+    radios: list[RadioStats] = []
+    for entry in interfaces.get("radios") or []:
+        if not isinstance(entry, dict):
+            continue
+        frequency = _to_float(entry.get("frequencyGHz"))
+        if frequency is None:
+            continue
+        radios.append(
+            RadioStats(
+                frequency_ghz=frequency,
+                tx_retries_percent=_to_float(entry.get("txRetriesPct")),
+            )
+        )
+    return tuple(radios)
+
+
 def _pick_gateway(devices: list[UnifiDevice]) -> UnifiDevice | None:
     """Identify the gateway among the device inventory."""
     for device in devices:
-        model = device.model.upper()
-        if device.device_type.upper() in {"UGW", "UDM", "UXG", "UCG"}:
-            return device
-        if any(tag in model for tag in ("UDM", "UXG", "UCG", "UDR", "USG")):
+        if device.role == "gateway":
             return device
     return devices[0] if devices else None
 

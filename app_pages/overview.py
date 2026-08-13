@@ -26,6 +26,7 @@ from components.cards import (
 )
 from components.charts import threshold_series, time_series
 from components.layout import (
+    chart_source_caption,
     grafana_link,
     health_header,
     read_only_notice,
@@ -33,7 +34,7 @@ from components.layout import (
 )
 from config import CRC_WATCH_SERIAL, TIME_RANGES, get_settings
 from core.collector import M_CPU, M_FS_USED, M_IOWAIT, M_LATENCY, M_SMART_CRC
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
 from core.status import Status
 from health.thresholds import get_thresholds
 from services import unifi
@@ -79,7 +80,7 @@ def overview() -> None:
     with internet_col:
         with st.container(border=True):
             st.markdown("**Internet latency**")
-            samples = history_series(M_LATENCY, None, range_seconds)
+            samples = trend_series(M_LATENCY, None, range_seconds)
             chart = threshold_series(
                 samples,
                 "Latency",
@@ -94,6 +95,7 @@ def overview() -> None:
                 )
             else:
                 st.altair_chart(chart, width="stretch")
+                chart_source_caption(samples)
             ping = snapshot.raw.get("network", {}).get("internet_ping")
             if ping is not None:
                 st.caption(
@@ -106,18 +108,20 @@ def overview() -> None:
     with host_col:
         with st.container(border=True):
             st.markdown("**CPU & iowait**")
-            cpu_samples = history_series(M_CPU, None, range_seconds)
+            cpu_samples = trend_series(M_CPU, None, range_seconds)
             chart = time_series(cpu_samples, "CPU", " (%)", area=True, zero=True)
             if chart is None:
                 st.caption("No CPU history yet.")
             else:
                 st.altair_chart(chart, width="stretch")
-            iowait_samples = history_series(M_IOWAIT, None, range_seconds)
+                chart_source_caption(cpu_samples)
+            iowait_samples = trend_series(M_IOWAIT, None, range_seconds)
             iowait_chart = time_series(
                 iowait_samples, "iowait", " (%)", height=90, zero=True
             )
             if iowait_chart is not None:
                 st.altair_chart(iowait_chart, width="stretch")
+                chart_source_caption(iowait_samples)
 
     # ---- Host KPI row ---------------------------------------------------
     server = snapshot.component("server")
@@ -165,7 +169,7 @@ def overview() -> None:
                     f"— {extra.get('sync_speed_kbps', 0) / 1024:.0f} MB/s, "
                     f"about {extra.get('sync_finish_minutes', 0):.0f} min remaining"
                 )
-            grafana_link("/d/raid/raid-health", "RAID detail in Grafana")
+            grafana_link("raid", "RAID detail in Grafana")
 
     with disk_col:
         crc_reading = _crc_reading(raid)

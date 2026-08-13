@@ -1,10 +1,14 @@
-"""Network — Internet, WAN, gateway and VLANs.
+"""Network — Internet, WAN, gateway, switches, access points and VLANs.
 
 Everything gateway-side (real WAN throughput, per-VLAN client counts, firewall
-drops, IDS/IPS) needs UniFi telemetry, which is not deployed. Those panels say
-NOT CONFIGURED and list the exact work required rather than approximating the
-numbers from host-side counters — the server's NIC throughput is not WAN
+drops, IDS/IPS) needs UniFi telemetry. Where it is not configured those panels
+say NOT CONFIGURED and list the exact work required, rather than approximating
+the numbers from host-side counters — the server's NIC throughput is not WAN
 throughput, and presenting it as such would be wrong.
+
+Where it *is* configured, the whole inventory is shown, not just the gateway:
+a switch or an access point going down presents to a user as "the internet is
+broken", and a healthy gateway is not the answer to that.
 """
 
 from __future__ import annotations
@@ -14,10 +18,16 @@ import streamlit as st
 
 from components.cards import metric_card, not_configured_card, status_card
 from components.charts import threshold_series, time_series, to_table
-from components.layout import health_table, page_header, read_only_notice
+from components.layout import (
+    chart_source_caption,
+    health_table,
+    page_header,
+    read_only_notice,
+)
 from config import TIME_RANGES, get_settings
 from core.collector import M_LATENCY, M_LOSS
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
+from core.status import Status
 from health.thresholds import get_thresholds
 from services import unifi
 from utils.formatting import (
@@ -90,7 +100,7 @@ trend_left, trend_right = st.columns(2)
 with trend_left:
     with st.container(border=True):
         st.markdown("**Latency**")
-        samples = history_series(M_LATENCY, None, range_seconds)
+        samples = trend_series(M_LATENCY, None, range_seconds)
         chart = threshold_series(
             samples,
             "Latency",
@@ -102,6 +112,7 @@ with trend_left:
             st.caption("No latency history yet.")
         else:
             st.altair_chart(chart, width="stretch")
+            chart_source_caption(samples)
             with st.expander("Table view"):
                 st.dataframe(
                     to_table(samples, "Latency"), hide_index=True, width="stretch"
@@ -110,7 +121,7 @@ with trend_left:
 with trend_right:
     with st.container(border=True):
         st.markdown("**Packet loss**")
-        samples = history_series(M_LOSS, None, range_seconds)
+        samples = trend_series(M_LOSS, None, range_seconds)
         chart = threshold_series(
             samples,
             "Loss",
@@ -122,6 +133,7 @@ with trend_right:
             st.caption("No packet-loss history yet.")
         else:
             st.altair_chart(chart, width="stretch")
+            chart_source_caption(samples)
 
 # ---------------------------------------------------------------------------
 # WAN IP
@@ -262,6 +274,124 @@ else:
             metric_card(
                 "WAN TX",
                 human_bytes_per_second(gateway_status.wan_tx_bytes_per_sec),
+            )
+
+    # -- Switches and access points ---------------------------------------
+    #
+    # The inventory is fetched for the gateway panel above and used to be
+    # discarded, which meant the switch and both APs were polled on every
+    # collection and never shown. They are the rest of the network path: if an
+    # AP is down, "the internet is broken" is what gets reported, and the
+    # gateway looking healthy is not the answer.
+    st.markdown("### UniFi devices")
+
+    devices = raw.get("unifi_devices") or []
+    devices_error = raw.get("unifi_devices_error") or ""
+    infrastructure = [d for d in devices if d.role != "gateway"]
+
+    if devices_error:
+        st.caption(f":gray[Device inventory unavailable: {devices_error}]")
+    elif not infrastructure:
+        st.caption(
+            ":gray[No switches or access points reported by the controller.]"
+        )
+    else:
+        for device in sorted(infrastructure, key=lambda d: (d.role, d.name)):
+            with st.container(border=True):
+                heading, badge = st.columns([3, 1], vertical_alignment="center")
+                with heading:
+                    st.markdown(
+                        f"**{device.name or device.model}** "
+                        f":gray[{device.role} · {device.model}]"
+                    )
+                with badge:
+                    status_card(
+                        "State",
+                        Status.HEALTHY if device.online else Status.CRITICAL,
+                        device.state.title() or "Unknown",
+                        source="unifi",
+                    )
+                stats = st.columns(5)
+                with stats[0]:
+                    metric_card("IP", device.ip_address or "—")
+                with stats[1]:
+                    metric_card(
+                        "Uptime",
+                        human_duration(device.uptime_seconds)
+                        if device.uptime_seconds
+                        else "—",
+                    )
+                with stats[2]:
+                    metric_card(
+                        "CPU",
+                        format_percent(device.cpu_percent)
+                        if device.cpu_percent is not None
+                        else "—",
+                    )
+                with stats[3]:
+                    metric_card(
+                        "RAM",
+                        format_percent(device.memory_percent)
+                        if device.memory_percent is not None
+                        else "—",
+                    )
+                with stats[4]:
+                    # Not clients: the Integration API's statistics payload
+                    # carries no client count for a device, so a "Clients" tile
+                    # here could only ever show "—". Firmware state is
+                    # something it does report, and is actionable.
+                    metric_card(
+                        "Firmware",
+                        device.firmware_version or "—",
+                        delta="update available"
+                        if device.firmware_updatable
+                        else None,
+                        delta_color="off",
+                    )
+                # Uplink rates are reported in bits per second; the dashboard
+                # speaks bytes everywhere else, so convert rather than mixing
+                # units between panels.
+                if device.uplink_rx_bps is not None or device.uplink_tx_bps is not None:
+                    st.caption(
+                        ":gray[Uplink "
+                        f"RX {human_bytes_per_second((device.uplink_rx_bps or 0) / 8.0)} · "
+                        f"TX {human_bytes_per_second((device.uplink_tx_bps or 0) / 8.0)}]"
+                    )
+
+                # Radio retries are the one wifi-quality number the API gives.
+                # A rising retry rate is interference or clients at the edge of
+                # range, and it shows here before anyone reports "wifi is slow".
+                if device.radios:
+                    radio_columns = st.columns(len(device.radios))
+                    for column, radio in zip(radio_columns, device.radios):
+                        with column:
+                            metric_card(
+                                f"{radio.band} retries",
+                                format_percent(radio.tx_retries_percent)
+                                if radio.tx_retries_percent is not None
+                                else "—",
+                            )
+
+        with st.expander("All UniFi devices"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Name": d.name or "—",
+                            "Role": d.role,
+                            "Model": d.model or "—",
+                            "IP": d.ip_address or "—",
+                            "MAC": d.mac or "—",
+                            "State": d.state.title() or "—",
+                            "Uptime": human_duration(d.uptime_seconds)
+                            if d.uptime_seconds
+                            else "—",
+                        }
+                        for d in sorted(devices, key=lambda d: (d.role, d.name))
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
             )
 
     # -- Networks as the controller defines them --------------------------

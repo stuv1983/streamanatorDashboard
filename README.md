@@ -218,6 +218,36 @@ with `--host` / `--dir`.
 The first install still goes through `install.sh`; this script only updates an
 existing one.
 
+### Rebuilding from scratch
+
+`scripts/rebuild.sh` runs **on the server** and rebuilds the virtualenv from
+nothing — the one thing a redeploy never does. Use it after a Python upgrade,
+a dependency change, or whenever the environment is suspect.
+
+```bash
+ssh arm@10.0.40.100
+cd /home/arm/projects/streamanator_dashboard
+./scripts/rebuild.sh --dry-run
+./scripts/rebuild.sh
+```
+
+It does not take the dashboard down to do it. The new environment is built as
+`.venv.new` while the old one keeps serving, the full test suite runs against
+it, and only then is it swapped in — with the old one kept until the restarted
+service answers on HTTP, and put back if it does not. A failed dependency
+install leaves the running dashboard untouched.
+
+Two details that are easy to get wrong and are handled here:
+
+* **A venv hardcodes its own absolute path** into every console-script shebang.
+  Renaming `.venv.new` to `.venv` breaks all of them, and the resulting error
+  blames the script rather than the missing interpreter. The script rewrites
+  those paths after the swap and smoke-tests the result *before* restarting.
+* `.env`, `var/accounts.json`, `var/audit.log` and `var/history.sqlite3` are
+  never touched — and are snapshotted to `~/streamanator-state-<stamp>.tar.gz`
+  first regardless, because "never touches" is a claim about the script, not
+  about the disk.
+
 ### Manual installation
 
 ```bash

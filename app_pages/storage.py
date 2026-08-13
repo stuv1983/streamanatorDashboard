@@ -13,10 +13,16 @@ import streamlit as st
 
 from components.cards import status_card
 from components.charts import capacity_projection, time_series, to_table
-from components.layout import grafana_link, health_table, page_header, read_only_notice
+from components.layout import (
+    chart_source_caption,
+    grafana_link,
+    health_table,
+    page_header,
+    read_only_notice,
+)
 from config import TIME_RANGES, get_settings
 from core.collector import M_FS_USED
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
 from services.system import get_disk_io_rates
 from utils.formatting import format_date, human_bytes, human_bytes_per_second
 
@@ -116,13 +122,14 @@ for filesystem in settings.filesystems:
                     f"{forecast.sample_count} samples, R²={forecast.r_squared:.2f}]"
                 )
 
-        samples = history_series(
+        samples = trend_series(
             M_FS_USED, {"mount": filesystem.mountpoint}, max(range_seconds, 7 * 86400)
         )
         if usage is not None and samples:
             chart = capacity_projection(samples, usage.total_bytes, forecast)
             if chart is not None:
                 st.altair_chart(chart, width="stretch")
+                chart_source_caption(samples)
                 with st.expander("Table view"):
                     st.dataframe(
                         to_table(
@@ -211,7 +218,7 @@ else:
         "buffering and slow imports more often than CPU does.]"
     )
 
-grafana_link("/d/storage/storage-io", "Open storage dashboard in Grafana")
+grafana_link("filesystem", "Open storage dashboard in Grafana")
 
 st.divider()
 health_table(storage.readings if storage else [])

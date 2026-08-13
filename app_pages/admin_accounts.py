@@ -315,6 +315,89 @@ st.divider()
 # All accounts
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Creating another admin
+#
+# Available to break-glass sessions as well as normal admins. Break-glass has
+# no password of its own, so "recover the console after losing the admin
+# password" has to end in creating a working admin account — refusing that here
+# would leave SSH as the only way back in, which is the situation break-glass
+# exists to avoid.
+# ---------------------------------------------------------------------------
+
+st.markdown("### Create an admin account")
+
+with st.expander("New admin account"):
+    if current.breakglass:
+        st.warning(
+            "You are signed in through break-glass. Creating an admin here is "
+            "the intended way back to normal access — sign in as the new "
+            "account afterwards and regenerate the break-glass codes, because "
+            "the set you used is now spent.",
+            icon=":material/vpn_key:",
+        )
+    st.caption(
+        "The new account is a full admin: same privileged actions, same access "
+        "to this page. It starts without an authenticator app — enrolling one "
+        "is the new owner's first job, from their own session."
+    )
+    with st.form("create_admin", clear_on_submit=True):
+        new_username = st.text_input(
+            "Username",
+            autocomplete="off",
+            help="3–32 characters: letters, digits, dot, dash or underscore.",
+        )
+        new_password = st.text_input(
+            "Password", type="password", autocomplete="new-password"
+        )
+        new_password_again = st.text_input(
+            "Password again", type="password", autocomplete="new-password"
+        )
+        new_note = st.text_input(
+            "Note (optional)",
+            autocomplete="off",
+            help="Who this account is for. Shown in the account list.",
+        )
+        st.caption(
+            f":gray[At least {crypto.MIN_PASSWORD_LENGTH} characters, and not "
+            "one of the well-known weak passwords.]"
+        )
+        create = st.form_submit_button(
+            "Create admin", type="primary", icon=":material/person_add:"
+        )
+
+    if create:
+        if new_password != new_password_again:
+            st.error("The passwords do not match.", icon=":material/error:")
+        else:
+            try:
+                created = store.create_admin(
+                    new_username, new_password, note=new_note.strip()
+                )
+            except ValueError as exc:
+                # create_admin raises for a weak password, a bad username and a
+                # name that is already taken. All three are the operator's to
+                # fix, so the message is shown as-is rather than generalised.
+                st.error(str(exc), icon=":material/error:")
+                audit.record(
+                    "account.create_admin", current.username, current.role,
+                    "failure", severity="warning", target=new_username.strip(),
+                    detail=str(exc), breakglass=current.breakglass,
+                )
+            else:
+                audit.record(
+                    "account.create_admin", current.username, current.role,
+                    "success", severity="warning", target=created.username,
+                    breakglass=current.breakglass,
+                )
+                st.success(
+                    f"Admin account **{created.username}** created. They can "
+                    "sign in now, and should enrol an authenticator app "
+                    "immediately.",
+                    icon=":material/check:",
+                )
+                st.rerun()
+
 st.markdown("### All accounts")
 
 for account in accounts:
@@ -357,8 +440,8 @@ for account in accounts:
                     st.rerun()
 
 st.caption(
-    "New admin accounts are created over SSH with "
-    "`scripts/admin_bootstrap.py add-admin <name>`. Passwords are never "
-    "accepted as command arguments — they would land in shell history and "
-    "the process list."
+    "Admin accounts can also be created over SSH with "
+    "`scripts/admin_bootstrap.py add-admin <name>` — the route to use when "
+    "nobody can sign in at all. Passwords are never accepted as command "
+    "arguments there: they would land in shell history and the process list."
 )

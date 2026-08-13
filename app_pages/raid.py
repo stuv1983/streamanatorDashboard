@@ -15,10 +15,16 @@ import streamlit as st
 
 from components.cards import delta_card, not_configured_card, reading_card, status_card
 from components.charts import time_series, to_table
-from components.layout import grafana_link, health_table, page_header, read_only_notice
+from components.layout import (
+    chart_source_caption,
+    grafana_link,
+    health_table,
+    page_header,
+    read_only_notice,
+)
 from config import CRC_WATCH_SERIAL, TIME_RANGES, get_settings
 from core.collector import M_SMART_CRC, M_SMART_TEMP
-from core.runtime import get_snapshot, history_series
+from core.runtime import get_snapshot, trend_series
 from core.status import Status
 from services.system import get_md_detail
 from utils.formatting import human_bytes, human_duration
@@ -91,7 +97,7 @@ else:
             icon=":material/error:",
         )
 
-    grafana_link("/d/raid/raid-health", "Open RAID dashboard in Grafana")
+    grafana_link("raid", "Open RAID dashboard in Grafana")
 
 with st.expander("mdadm --detail output"):
     detail = get_md_detail(settings.raid.device, settings.local.command_timeout)
@@ -190,12 +196,13 @@ else:
                         f"windows fill in as the sampler accumulates data.]"
                     )
 
-                crc_samples = history_series(
+                crc_samples = trend_series(
                     M_SMART_CRC, {"serial": serial}, range_seconds
                 )
                 chart = time_series(crc_samples, "CRC errors", zero=False)
                 if chart is not None:
                     st.altair_chart(chart, width="stretch")
+                    chart_source_caption(crc_samples)
                     with st.expander("Table view"):
                         st.dataframe(
                             to_table(crc_samples, "CRC errors"),
@@ -243,10 +250,11 @@ else:
                     else "**—**"
                 )
 
-            temp_samples = history_series(M_SMART_TEMP, {"serial": serial}, range_seconds)
+            temp_samples = trend_series(M_SMART_TEMP, {"serial": serial}, range_seconds)
             temp_chart = time_series(temp_samples, "Temperature", " (°C)", height=120)
             if temp_chart is not None:
                 st.altair_chart(temp_chart, width="stretch")
+                chart_source_caption(temp_samples)
 
 st.divider()
 st.markdown("### All disk readings")

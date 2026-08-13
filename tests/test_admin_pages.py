@@ -313,3 +313,61 @@ def test_breakglass_banner_appears_on_every_page():
     app = AppTest.from_file(str(PACKAGE_ROOT / "app.py"), default_timeout=120)
     app.run()
     assert any("Break-glass" in block.value for block in app.error)
+
+
+# ---------------------------------------------------------------------------
+# Creating a second admin from the console
+#
+# Until now the only route was `scripts/admin_bootstrap.py add-admin` over SSH.
+# The store already supported it; nothing surfaced it.
+# ---------------------------------------------------------------------------
+
+
+def test_accounts_page_offers_admin_creation():
+    app = _run("admin_accounts.py", session=_admin_session())
+    _assert_clean(app, "admin_accounts.py")
+    labels = [field.label for field in app.text_input]
+    assert "Username" in labels
+    assert "Password" in labels
+    assert "Password again" in labels
+
+
+def test_break_glass_session_can_also_create_an_admin():
+    """The recovery path: break-glass in, working admin out.
+
+    Break-glass has no password of its own, so refusing this would leave SSH
+    as the only way back to normal access — the situation break-glass exists
+    to avoid.
+    """
+    app = _run("admin_accounts.py", session=_admin_session(breakglass=True))
+    _assert_clean(app, "admin_accounts.py")
+    assert "Username" in [field.label for field in app.text_input]
+
+
+def test_created_admin_can_sign_in():
+    """The capability the page is claiming, asserted at the store."""
+    from core.runtime import account_store
+
+    store = account_store()
+    store.create_admin("colleague", "a sufficiently long password")
+
+    result = store.verify_password_factor("colleague", "a sufficiently long password")
+
+    assert result.ok, getattr(result, "reason", result)
+    assert store.get("colleague").role == "admin"
+
+
+def test_duplicate_admin_name_is_refused():
+    from core.runtime import account_store
+
+    store = account_store()
+    store.create_admin("taken", "a sufficiently long password")
+    with pytest.raises(ValueError, match="already exists"):
+        store.create_admin("taken", "another sufficiently long password")
+
+
+def test_weak_password_is_refused_for_a_new_admin():
+    from core.runtime import account_store
+
+    with pytest.raises(ValueError):
+        account_store().create_admin("weakling", "short")
