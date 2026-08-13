@@ -12,9 +12,17 @@ Nothing on the server was modified to make it match the documentation.
 
 ---
 
-## 1. The monitoring stack does not exist
+## 1. The monitoring stack did not exist (now deployed)
 
-**This is the largest discrepancy and it changed the architecture.**
+**This was the largest discrepancy and it changed the architecture.**
+
+> **Update, 13 Aug 2026:** the stack shipped in `deploy/monitoring-stack/` has
+> since been deployed via `deploy.sh`. Prometheus, Grafana, node-exporter,
+> cAdvisor, blackbox-exporter and smartctl-exporter are running (all bound to
+> 127.0.0.1), the dashboard's `PROMETHEUS_URL` is set, and SMART/CRC history —
+> including `WPV2E6LL` at CRC 5670 — is being collected. The "Live" column
+> below records the original survey state; the local-collector fallback
+> described here still exists and still runs whenever Prometheus is absent.
 
 The spec describes Prometheus, Grafana, cAdvisor and Node Exporter as "existing
 infrastructure" and instructs the dashboard to consume Prometheus as the

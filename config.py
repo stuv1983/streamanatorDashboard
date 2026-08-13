@@ -196,10 +196,10 @@ VLANS: tuple[Vlan, ...] = (
 class PrometheusConfig:
     """Prometheus is the *preferred* source but is optional.
 
-    As of the 13 Aug 2026 survey no Prometheus server was running on
-    streamanator, so `url` defaults to empty and the dashboard falls back to
-    local collectors plus its own history store. Set PROMETHEUS_URL once the
-    monitoring stack in `deploy/monitoring-stack/` is deployed.
+    When `PROMETHEUS_URL` is unset the dashboard falls back to local collectors
+    plus its own SQLite history store, so it is fully functional either way.
+    The 13 Aug 2026 survey found no Prometheus running; `deploy/monitoring-stack/`
+    now ships one, and `deploy.sh` sets this URL when it is brought up.
     """
 
     url: str = env_str("PROMETHEUS_URL", "")
@@ -430,6 +430,13 @@ def _build_service_endpoints() -> tuple[ServiceEndpoint, ...]:
     admin console applies on `reload_settings()` instead of waiting for a
     process restart. `Settings.endpoints` calls this per instantiation.
     """
+    # Prometheus and Grafana are optional and their hosting label is derived,
+    # not hard-coded: once deploy/monitoring-stack/deploy.sh runs it sets these
+    # URLs, and the label must flip from "not deployed" to the live location
+    # rather than freezing on a survey date that has since gone stale.
+    prometheus_url = env_str("PROMETHEUS_URL")
+    grafana_url = env_str("GRAFANA_URL")
+    _stack_hint = "Not deployed — run deploy/monitoring-stack/deploy.sh"
     return (
         ServiceEndpoint(
             "plex",
@@ -492,14 +499,22 @@ def _build_service_endpoints() -> tuple[ServiceEndpoint, ...]:
         ServiceEndpoint(
             "grafana",
             "Grafana",
-            env_str("GRAFANA_URL", "") + "/api/health" if env_str("GRAFANA_URL") else "",
-            hosting="NOT DEPLOYED as of 13 Aug 2026",
+            grafana_url + "/api/health" if grafana_url else "",
+            hosting=(
+                "Docker · monitoring stack · 127.0.0.1:3000"
+                if grafana_url
+                else _stack_hint
+            ),
         ),
         ServiceEndpoint(
             "prometheus",
             "Prometheus",
-            env_str("PROMETHEUS_URL", "") + "/-/healthy" if env_str("PROMETHEUS_URL") else "",
-            hosting="NOT DEPLOYED as of 13 Aug 2026",
+            prometheus_url + "/-/healthy" if prometheus_url else "",
+            hosting=(
+                "Docker · monitoring stack · 127.0.0.1:9090"
+                if prometheus_url
+                else _stack_hint
+            ),
         ),
     )
 
