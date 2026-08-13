@@ -119,6 +119,40 @@ def history_store() -> HistoryStore:
 
 
 @st.cache_resource
+def notification_store():
+    """Persistent non-secret email subscriptions and delivery state."""
+    from services.notifications import NotificationStore
+
+    return NotificationStore(settings().email.preferences_path)
+
+
+@st.cache_resource
+def notification_worker():
+    """Start the background alert/weekly-report evaluator once per process."""
+    from services.notifications import NotificationManager, NotificationWorker
+
+    config = settings()
+    store = history_store()
+    manager = NotificationManager(notification_store())
+    instance = NotificationWorker(
+        manager=manager,
+        # The worker deliberately gets fresh settings on every pass. It also
+        # uses local collectors rather than a cached Prometheus client whose
+        # connection pool may have been replaced during a credential reload.
+        snapshot_factory=lambda: build_snapshot(
+            settings=get_settings(),
+            history=store,
+            prometheus_client=None,
+            thresholds=get_thresholds(),
+        ),
+        settings_factory=get_settings,
+        interval_seconds=config.email.poll_interval_seconds,
+    )
+    instance.start()
+    return instance
+
+
+@st.cache_resource
 def sampler() -> Sampler:
     """Start the background history sampler exactly once per process."""
     config = settings()

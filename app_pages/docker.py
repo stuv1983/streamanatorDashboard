@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from components.alerts import alert_card
+from components.charts import status_bar
 from components.layout import page_header, read_only_notice
 from components.theme import style
 from config import GLUETUN_PUBLISHED_PORTS, get_settings
@@ -48,6 +49,8 @@ if not containers:
 # ---------------------------------------------------------------------------
 
 rows = []
+chart_labels: list[str] = []
+chart_statuses: list[Status] = []
 for expected in settings.containers:
     container = find_container(containers, expected.name)
     reading = next(
@@ -56,6 +59,8 @@ for expected in settings.containers:
     ) if applications else None
     status = reading.status if reading else Status.UNKNOWN
     restart_delta = reading.extra.get("restart_delta") if reading else None
+    chart_labels.append(expected.display)
+    chart_statuses.append(status)
 
     rows.append(
         {
@@ -77,6 +82,15 @@ for expected in settings.containers:
             "Behind VPN": "yes" if expected.behind_vpn else "no",
         }
     )
+
+st.markdown("### Container health map")
+health_chart = status_bar(
+    chart_labels,
+    chart_statuses,
+    height=max(150, min(440, len(chart_labels) * 27)),
+)
+if health_chart is not None:
+    st.altair_chart(health_chart, width="stretch")
 
 frame = pd.DataFrame(rows).sort_values("_rank", ascending=False).drop(columns=["_rank"])
 st.dataframe(

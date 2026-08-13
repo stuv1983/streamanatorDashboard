@@ -1,0 +1,7 @@
+# Shell scripts are deployed to a Linux host from a Windows workstation. They
+# must keep LF endings — a CRLF shebang line makes bash fail with an opaque
+# "\r: command not found", and scripts/deploy.sh compares file hashes across
+# the two machines, so a rewritten line ending would also make every file look
+# changed on every deploy.
+*.sh text eol=lf
+*.service text eol=lf

@@ -271,6 +271,68 @@ def status_bar(
     )
 
 
+def magnitude_bar(
+    labels: list[str],
+    values: list[float],
+    value_label: str,
+    unit: str = "",
+    statuses: list[Status] | None = None,
+    height: int | None = None,
+) -> alt.Chart | None:
+    """Rank entities by one comparable current value.
+
+    The optional status encoding is reserved for genuine health verdicts.  A
+    table remains beside or immediately above each use, so precise values are
+    not trapped in a tooltip.
+    """
+    if not labels or len(labels) != len(values):
+        return None
+    if statuses is not None and len(statuses) != len(labels):
+        return None
+    frame = pd.DataFrame(
+        {
+            "entity": labels,
+            "value": values,
+            "status": [status.value for status in statuses]
+            if statuses is not None
+            else [""] * len(labels),
+        }
+    ).sort_values("value", ascending=False)
+
+    color = alt.value(ACCENT)
+    tooltip: list[alt.Tooltip] = [
+        alt.Tooltip("entity:N", title="Name"),
+        alt.Tooltip("value:Q", title=f"{value_label}{unit}", format=",.2f"),
+    ]
+    if statuses is not None:
+        domain = [status.value for status in Status]
+        color = alt.Color(
+            "status:N",
+            scale=alt.Scale(
+                domain=domain, range=[status_color(Status(item)) for item in domain]
+            ),
+            legend=alt.Legend(title=None, orient="bottom", labelColor=AXIS),
+        )
+        tooltip.append(alt.Tooltip("status:N", title="Status"))
+
+    return (
+        alt.Chart(frame)
+        .mark_bar(cornerRadiusEnd=4)
+        .encode(
+            x=alt.X(
+                "value:Q",
+                axis=_base_axis(f"{value_label}{unit}"),
+                scale=alt.Scale(zero=True),
+            ),
+            y=alt.Y("entity:N", axis=_base_axis(""), sort="-x"),
+            color=color,
+            tooltip=tooltip,
+        )
+        .properties(height=height or max(120, min(420, len(labels) * 25)))
+        .configure_view(strokeWidth=0)
+    )
+
+
 def capacity_projection(
     samples: list[tuple[float, float]],
     total_bytes: float,

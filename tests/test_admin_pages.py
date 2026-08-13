@@ -26,6 +26,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 GUARDED_PAGES = [
     "admin_actions.py",
     "admin_keys.py",
+    "admin_notifications.py",
     "admin_smart.py",
     "admin_probes.py",
     "admin_accounts.py",
@@ -45,6 +46,7 @@ def _isolated_admin_state(tmp_path_factory):
     os.environ["ADMIN_AUDIT_PATH"] = str(directory / "audit.log")
     os.environ["STREAMANATOR_ENV_FILE"] = str(directory / ".env")
     os.environ["HISTORY_DB_PATH"] = str(directory / "history.sqlite3")
+    os.environ["NOTIFICATION_CONFIG_PATH"] = str(directory / "notifications.json")
     os.environ["HISTORY_SAMPLE_INTERVAL"] = "3600"
 
     import config
@@ -62,6 +64,7 @@ def _isolated_admin_state(tmp_path_factory):
     runtime.settings.clear()
     runtime.account_store.clear()
     runtime.audit_log.clear()
+    runtime.notification_store.clear()
 
     _ensure_accounts()
     yield directory

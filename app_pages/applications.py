@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from components.cards import metric_card, not_configured_card, reading_card
+from components.charts import magnitude_bar
 from components.layout import health_table, page_header, read_only_notice
 from components.theme import style
 from config import TIME_RANGES, get_settings
@@ -50,6 +51,9 @@ if not settings.blackbox.configured:
     )
 
 rows = []
+latency_labels: list[str] = []
+latency_values: list[float] = []
+latency_statuses: list[Status] = []
 for endpoint in settings.endpoints:
     reading = next(
         (r for r in (applications.readings if applications else []) if r.key == f"probe.{endpoint.key}"),
@@ -57,6 +61,10 @@ for endpoint in settings.endpoints:
     )
     probe = probes.get(endpoint.key)
     status = reading.status if reading else Status.UNKNOWN
+    if probe and probe.latency_ms is not None:
+        latency_labels.append(endpoint.display)
+        latency_values.append(float(probe.latency_ms))
+        latency_statuses.append(status)
     rows.append(
         {
             "_rank": status.rank,
@@ -88,6 +96,17 @@ st.dataframe(
         "URL": st.column_config.TextColumn(width="medium"),
     },
 )
+
+latency_chart = magnitude_bar(
+    latency_labels,
+    latency_values,
+    "HTTP latency",
+    " (ms)",
+    latency_statuses,
+)
+if latency_chart is not None:
+    st.markdown("#### Current response time")
+    st.altair_chart(latency_chart, width="stretch")
 
 st.caption(
     ":gray[Stage timings are separated deliberately: a DNS failure and an "

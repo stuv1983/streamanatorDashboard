@@ -181,6 +181,43 @@ Step 3 is separate because it needs a terminal. See
 [Admin console](#admin-console) for what it creates and why it is not a web
 setup wizard.
 
+### Updating a running install
+
+`scripts/deploy.sh` pushes changes from the workstation to the server. It sends
+only files whose SHA-256 differs from the server's copy, so a typical deploy is
+a few kilobytes rather than the whole tree.
+
+```bash
+./scripts/deploy.sh --dry-run   # list what differs, send nothing
+./scripts/deploy.sh             # back up, send, restart, verify
+```
+
+Each deploy tars the current server tree into `var/deploy-backups/` before
+writing anything, restarts the systemd unit, and polls
+`/_stcore/health` for 30 seconds. If the dashboard does not come back, the
+script prints the last 30 log lines, restores the backup and restarts again —
+so a bad deploy ends with the previous version running, not with an outage.
+
+| Flag | Effect |
+| --- | --- |
+| `--dry-run` | Show the changed-file list and exit |
+| `--prune` | Also delete server files no longer in the repo |
+| `--force-restart` | Restart even when nothing changed |
+| `--no-restart` | Write files, leave the running process alone |
+| `--rollback` | Restore the most recent backup and restart |
+| `--list-backups` | List backups on the server |
+
+It runs from Git Bash on Windows and needs only `ssh`, `tar` and `sha256sum` —
+no rsync. The file list comes from `git ls-files --cached --others
+--exclude-standard`, so `.env`, `var/` and `.venv/` are excluded by the same
+rules that keep them out of the repository: a deploy never touches the server's
+secrets, history database or account store. Host and path default to
+`arm@10.0.40.100:/home/arm/projects/streamanator_dashboard` and are overridable
+with `--host` / `--dir`.
+
+The first install still goes through `install.sh`; this script only updates an
+existing one.
+
 ### Manual installation
 
 ```bash

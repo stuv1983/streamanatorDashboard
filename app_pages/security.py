@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from components.cards import not_configured_card
+from components.charts import magnitude_bar
 from components.layout import health_table, page_header, read_only_notice
 from components.theme import style
 from config import EXPECTED_LISTENERS, get_settings
@@ -238,6 +239,13 @@ if settings.unifi.configured:
                 }
             )
         st.dataframe(pd.DataFrame(zone_rows), hide_index=True, width="stretch")
+        zone_chart = magnitude_bar(
+            [row["Zone"] for row in zone_rows],
+            [float(row["Count"]) for row in zone_rows],
+            "Networks in zone",
+        )
+        if zone_chart is not None:
+            st.altair_chart(zone_chart, width="stretch")
         st.caption(
             ":gray[Read live from the controller. Confirm Media-DMZ and "
             "Management sit in different zones, and that no zone silently "

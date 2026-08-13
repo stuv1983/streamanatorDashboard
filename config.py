@@ -182,8 +182,8 @@ VLANS: tuple[Vlan, ...] = (
     Vlan(10, "Home", "10.0.10.0/24", True),
     Vlan(20, "IoT", "10.0.20.0/24", False),
     Vlan(30, "Guest", "10.0.30.0/24", False),
-    Vlan(40, "Media-DMZ", "10.0.40.0/24", False),
-    Vlan(50, "Management", "10.0.50.0/24", True),
+    Vlan(40, "Media", "10.0.40.0/24", False),
+    Vlan(50, "DMZ", "10.0.50.0/24", True),
 )
 
 
@@ -756,6 +756,48 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True)
+class EmailConfig:
+    """SMTP delivery and non-secret notification-state locations.
+
+    Gmail app passwords are credentials, so they stay in the same protected
+    ``.env`` as the application's API keys.  Subscription choices and delivery
+    state contain no secrets and live in their own atomic JSON store.
+    """
+
+    smtp_host: str = field(
+        default_factory=lambda: env_str("EMAIL_SMTP_HOST", "smtp.gmail.com")
+    )
+    smtp_port: int = field(default_factory=lambda: env_int("EMAIL_SMTP_PORT", 465))
+    username: str | None = field(
+        default_factory=lambda: env_opt("EMAIL_SMTP_USER")
+    )
+    app_password: str | None = field(
+        default_factory=lambda: env_opt("EMAIL_SMTP_APP_PASSWORD")
+    )
+    sender: str | None = field(default_factory=lambda: env_opt("EMAIL_FROM"))
+    timeout_seconds: float = field(
+        default_factory=lambda: max(1.0, env_float("EMAIL_SMTP_TIMEOUT", 15.0))
+    )
+    preferences_path: str = field(
+        default_factory=lambda: env_str(
+            "NOTIFICATION_CONFIG_PATH",
+            str(PROJECT_ROOT / "var" / "notifications.json"),
+        )
+    )
+    poll_interval_seconds: int = field(
+        default_factory=lambda: max(60, env_int("NOTIFICATION_POLL_INTERVAL", 300))
+    )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.smtp_host and self.username and self.app_password)
+
+    @property
+    def from_address(self) -> str:
+        return self.sender or self.username or ""
+
+
+@dataclass(frozen=True)
 class AuthConfig:
     """Administrative access control.
 
@@ -803,6 +845,7 @@ class Settings:
     host: HostConfig = field(default_factory=HostConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
     prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
     grafana: GrafanaConfig = field(default_factory=GrafanaConfig)
     unifi: UnifiConfig = field(default_factory=UnifiConfig)

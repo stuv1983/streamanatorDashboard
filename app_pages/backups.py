@@ -13,6 +13,7 @@ import streamlit as st
 
 from components.alerts import alert_card
 from components.cards import metric_card, status_card
+from components.charts import magnitude_bar
 from components.layout import page_header, read_only_notice
 from config import get_settings
 from core.runtime import get_snapshot, history_store
@@ -46,6 +47,36 @@ st.info(
     "a copy that is off this host.",
     icon=":material/info:",
 )
+
+age_labels: list[str] = []
+age_values: list[float] = []
+age_statuses: list[Status] = []
+for job, backup_status in zip(settings.backups, statuses):
+    if backup_status.age_days is None:
+        continue
+    age_reading = next(
+        (
+            reading
+            for reading in (backups.readings if backups else [])
+            if reading.key == f"backup.{job.key}"
+        ),
+        None,
+    )
+    age_labels.append(job.display)
+    age_values.append(float(backup_status.age_days))
+    age_statuses.append(age_reading.status if age_reading else Status.UNKNOWN)
+
+age_chart = magnitude_bar(
+    age_labels,
+    age_values,
+    "Age",
+    " (days)",
+    age_statuses,
+)
+if age_chart is not None:
+    st.markdown("### Backup age at a glance")
+    st.altair_chart(age_chart, width="stretch")
+    st.caption(":gray[Exact timestamps and retention details remain in the cards below.]")
 
 for job, status in zip(settings.backups, statuses):
     reading = next(

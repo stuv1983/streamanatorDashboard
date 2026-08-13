@@ -29,7 +29,12 @@ import streamlit as st  # noqa: E402
 from auth import session as auth_session  # noqa: E402
 from components.layout import refresh_controls, time_range_selector  # noqa: E402
 from config import get_settings  # noqa: E402
-from core.runtime import init_session_state, sampler, settings  # noqa: E402
+from core.runtime import (  # noqa: E402
+    init_session_state,
+    notification_worker,
+    sampler,
+    settings,
+)
 
 st.set_page_config(
     page_title="Streamanator Dashboard",
@@ -44,6 +49,7 @@ st.set_page_config(
 settings()
 init_session_state()
 sampler()
+notification_worker()
 
 config = get_settings()
 
@@ -97,6 +103,11 @@ if signed_in:
             icon=":material/play_circle:",
         ),
         st.Page("app_pages/admin_keys.py", title="API keys", icon=":material/key:"),
+        st.Page(
+            "app_pages/admin_notifications.py",
+            title="Email reports",
+            icon=":material/mail:",
+        ),
         st.Page(
             "app_pages/admin_smart.py",
             title="Disk health setup",
