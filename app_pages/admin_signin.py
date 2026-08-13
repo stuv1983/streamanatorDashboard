@@ -12,12 +12,17 @@ from __future__ import annotations
 import streamlit as st
 
 from auth import session as auth_session
-from auth.accounts import LOW_CODE_WARNING, StoreCorruptError
+from auth.accounts import LOW_CODE_WARNING, StoreCorruptError, StoreUnreadableError
 from components.layout import page_header
+from config import PROJECT_ROOT
 from core.runtime import account_store, audit_log
 
 store = account_store()
 audit = audit_log()
+
+#: Repair instructions are run over SSH on the host, so they must name the
+#: directory this process is actually running from, not a path baked in here.
+PROJECT_DIR = PROJECT_ROOT
 
 page_header("Admin sign-in", "Privileged access to configuration and actions")
 
@@ -26,6 +31,35 @@ page_header("Admin sign-in", "Privileged access to configuration and actions")
 # parse would mean guessing which accounts exist.
 try:
     store.load()
+except StoreUnreadableError as exc:
+    # Access, not content. The accounts are almost certainly intact, so the
+    # advice must not be "delete it": that would throw away every password
+    # hash, TOTP enrolment and break-glass code to work around a chmod.
+    st.error(
+        f"**The account store cannot be opened.** {exc}",
+        icon=":material/lock:",
+    )
+    st.markdown(
+        "This is a file-permission fault, not corruption — the accounts "
+        "themselves are intact. It usually means the file was created or "
+        "restored by a different user (a `sudo` run of the bootstrap script "
+        "or a state restore). **Do not delete it.** Over SSH, hand it back to "
+        "the account the dashboard runs as:"
+    )
+    st.code(
+        f"cd {PROJECT_DIR}\n"
+        "ls -l var/                       # confirm the owner\n"
+        "sudo chown $(whoami): var var/accounts.json\n"
+        "chmod 700 var && chmod 600 var/accounts.json\n"
+        "sudo systemctl restart streamanator-dashboard",
+        language="bash",
+    )
+    st.caption(
+        ":gray[Check the rest of `var/` at the same time — audit.log, "
+        "history.sqlite3, notifications.json and probes.json are written by "
+        "the same process and go wrong together.]"
+    )
+    st.stop()
 except StoreCorruptError as exc:
     st.error(
         f"**The account store cannot be read.** {exc}",
@@ -37,8 +71,7 @@ except StoreCorruptError as exc:
         "`var/accounts.json` from a backup, or delete it and re-run:"
     )
     st.code(
-        "cd /home/arm/projects/streamanator_dashboard\n"
-        ".venv/bin/python scripts/admin_bootstrap.py init",
+        f"cd {PROJECT_DIR}\n.venv/bin/python scripts/admin_bootstrap.py init",
         language="bash",
     )
     st.stop()

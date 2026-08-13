@@ -106,6 +106,63 @@ class TestHistoryStore:
         assert store.latest("c") is None
 
 
+class TestStoreSurvivesFileLoss:
+    """The database file can vanish under a running process — a cleaned `var/`,
+    a redeploy that swaps the checkout. The store is a cached resource for the
+    life of the process, so it has to recover on its own rather than raise
+    "no such table: samples" at every page render from then on.
+    """
+
+    def test_write_recreates_a_dropped_schema(self, store):
+        store.record("m", 1.0)
+        store._connection().executescript(
+            "DROP TABLE samples; DROP TABLE events; DROP TABLE state;"
+        )
+
+        store.record("m", 2.0)
+
+        assert store.latest("m")[1] == 2.0
+        assert store.last_write_error is None
+
+    def test_new_thread_connecting_to_an_empty_file_rebuilds_schema(self, store):
+        """A thread that first connects *after* the file was replaced would
+        otherwise open an empty database and fail on every write."""
+        import threading
+
+        store.record("m", 1.0)
+        store._connection().executescript(
+            "DROP TABLE samples; DROP TABLE events; DROP TABLE state;"
+        )
+        results: list[tuple[float, float] | None] = []
+
+        def worker() -> None:
+            store.record("m", 3.0)
+            results.append(store.latest("m"))
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        assert results and results[0] is not None and results[0][1] == 3.0
+
+    def test_write_failure_degrades_instead_of_raising(self, store, monkeypatch):
+        """A page render must survive a store that cannot be written to."""
+        from core.history import HistoryStoreError
+
+        def explode(_operation):
+            raise HistoryStoreError("disk I/O error")
+
+        monkeypatch.setattr(store, "_write", explode)
+
+        store.record("m", 1.0)  # must not raise
+        change = store.put_state("wan.ip", "203.0.113.7")
+        store.add_event("network", "something happened")
+
+        assert change.changed is False
+        assert change.first_seen is True
+        assert store.last_write_error == "disk I/O error"
+
+
 class TestStateChangeDetection:
     def test_first_observation_is_not_a_change(self, store):
         """The dashboard must not announce a change on its very first run."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -323,6 +324,26 @@ def test_malformed_entry_poisons_the_whole_load(tmp_path):
 def test_missing_store_is_not_corrupt(tmp_path):
     """'Not set up yet' and 'corrupt' must stay distinguishable."""
     assert AccountStore(tmp_path / "absent.json").load() == {}
+
+
+def test_unopenable_store_is_distinguished_from_corrupt(tmp_path, monkeypatch):
+    """EACCES means "fix the permissions", corruption means "restore or
+    re-bootstrap". Telling an operator to delete the file for a chmod problem
+    destroys intact accounts, so the two must not share a type."""
+    from auth.accounts import StoreCorruptError, StoreUnreadableError
+
+    path = tmp_path / "accounts.json"
+    path.write_text(json.dumps({"version": 3, "accounts": []}), encoding="utf-8")
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    with pytest.raises(StoreUnreadableError):
+        AccountStore(path).load()
+    # Still a StoreCorruptError, so every existing handler keeps failing closed.
+    assert issubclass(StoreUnreadableError, StoreCorruptError)
 
 
 def test_store_is_written_with_restrictive_permissions(store):

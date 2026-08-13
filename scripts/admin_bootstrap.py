@@ -78,9 +78,47 @@ def _print_codes(codes: list[str]) -> None:
     )
 
 
+def _refuse_root_writes(directory: Path) -> None:
+    """Refuse to write state as a user the dashboard cannot read back.
+
+    `sudo .venv/bin/python scripts/admin_bootstrap.py init` writes a
+    root-owned, 0600 accounts.json. The service then runs as `arm`, gets
+    EACCES on every sign-in, and the accounts are intact but unreachable —
+    with the old error text advising deletion as the fix.
+
+    The test is "am I root writing into somebody else's directory", not "am I
+    root", so a deployment that genuinely runs as root is left alone.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    if os.environ.get("STREAMANATOR_ALLOW_ROOT") == "1":
+        return
+    try:
+        owner_uid = directory.stat().st_uid
+    except OSError:
+        return
+    if owner_uid == 0:
+        return
+    try:
+        import pwd
+
+        owner = pwd.getpwuid(owner_uid).pw_name
+    except (ImportError, KeyError):  # pragma: no cover - unusual passwd setup
+        owner = str(owner_uid)
+    raise SystemExit(
+        f"Refusing to run as root: {directory} belongs to '{owner}', and files "
+        f"written here would be root-owned and unreadable by the dashboard.\n"
+        f"Run it as the service user instead:\n"
+        f"  sudo -u {owner} .venv/bin/python scripts/admin_bootstrap.py ...\n"
+        f"(set STREAMANATOR_ALLOW_ROOT=1 if the service really does run as root)"
+    )
+
+
 def _store() -> tuple[AccountStore, AuditLog]:
     settings = get_settings()
-    Path(settings.auth.accounts_path).parent.mkdir(parents=True, exist_ok=True)
+    directory = Path(settings.auth.accounts_path).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    _refuse_root_writes(directory)
     return AccountStore(settings.auth.accounts_path), AuditLog(settings.auth.audit_path)
 
 
@@ -267,10 +305,22 @@ def main(argv: list[str] | None = None) -> int:
     listing.set_defaults(func=cmd_list)
 
     args = parser.parse_args(argv)
-    from auth.accounts import StoreCorruptError
+    from auth.accounts import StoreCorruptError, StoreUnreadableError
 
     try:
         return int(args.func(args))
+    except StoreUnreadableError as exc:
+        # Access, not content — deleting would discard intact accounts.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            "This is a permission fault, not corruption. Do NOT delete the "
+            "file: fix its ownership instead, e.g.\n"
+            "  sudo chown $(whoami): var var/accounts.json\n"
+            "  chmod 700 var && chmod 600 var/accounts.json\n"
+            "Running this script under sudo is what usually causes it.",
+            file=sys.stderr,
+        )
+        return 2
     except StoreCorruptError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print(

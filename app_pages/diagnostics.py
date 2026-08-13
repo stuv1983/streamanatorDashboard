@@ -56,7 +56,8 @@ with collection[3]:
     st.metric("Health score", f"{snapshot.health.score:.0f}", border=True)
 
 sampler_instance = sampler()
-store_stats = history_store().stats()
+store = history_store()
+store_stats = store.stats()
 
 with st.container(border=True):
     st.markdown("**Background history sampler**")
@@ -75,6 +76,14 @@ with st.container(border=True):
         st.markdown(f"**{sampler_instance.interval}s**")
     if sampler_instance.last_error:
         st.error(f"Last sampler error: {sampler_instance.last_error}", icon=":material/error:")
+    # Writes on the collection path are best-effort, so a broken store shows up
+    # as missing deltas rather than an exception. This is where it surfaces.
+    if store.last_write_error:
+        st.warning(
+            f"Last history write error: {store.last_write_error} — deltas and "
+            "forecasts will have gaps until this clears.",
+            icon=":material/warning:",
+        )
 
     st.caption(
         f":gray[History store: {store_stats['samples']:,} samples across "

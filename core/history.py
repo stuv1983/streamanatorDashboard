@@ -70,6 +70,29 @@ CREATE TABLE IF NOT EXISTS state (
 """
 
 
+_TABLES = ("samples", "events", "state")
+
+
+def _tables_present(conn: sqlite3.Connection) -> bool:
+    """Cheap read-only check that the schema is actually there.
+
+    Used instead of unconditionally running `_SCHEMA`: `CREATE TABLE IF NOT
+    EXISTS` still opens a write transaction, and paying that on every thread's
+    first connect is contention the sampler does not need.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN "
+        "(?, ?, ?)",
+        _TABLES,
+    ).fetchone()
+    return bool(row) and row[0] == len(_TABLES)
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    conn.commit()
+
+
 def _encode_labels(labels: dict[str, str] | None) -> str:
     if not labels:
         return ""
@@ -109,6 +132,10 @@ class HistoryStore:
         self.busy_timeout_ms = busy_timeout_ms
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        #: Last write failure, for the diagnostics page. Writes on the
+        #: collection path are best-effort (see `_write_best_effort`), so this
+        #: is the only place a persistent store problem becomes visible.
+        self.last_write_error: str | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # WAL is a property of the database *file*, so it is set once here on
         # a throwaway connection instead of racing on every thread's first
@@ -117,8 +144,7 @@ class HistoryStore:
         setup = sqlite3.connect(self.path, timeout=busy_timeout_ms / 1000)
         try:
             setup.execute("PRAGMA journal_mode=WAL")
-            setup.executescript(_SCHEMA)
-            setup.commit()
+            _ensure_schema(setup)
         finally:
             setup.close()
 
@@ -134,8 +160,22 @@ class HistoryStore:
             )
             conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
             conn.execute("PRAGMA synchronous=NORMAL")
+            # The schema is created in __init__, but that ran once, possibly
+            # days ago. If the database file was deleted or replaced since
+            # (a cleaned `var/`, a redeploy that swapped the checkout),
+            # sqlite3.connect happily creates an empty replacement and every
+            # write from this thread would fail with "no such table".
+            if not _tables_present(conn):
+                _ensure_schema(conn)
             self._local.conn = conn
         return conn
+
+    @staticmethod
+    def _rollback(conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
 
     def _write(self, operation) -> None:
         """Run one write transaction: BEGIN IMMEDIATE, rollback on failure,
@@ -146,26 +186,58 @@ class HistoryStore:
         """
         with self._write_lock:
             conn = self._connection()
-            for attempt in range(3):
+            lock_attempts = 0
+            healed = False
+            while True:
                 try:
                     conn.execute("BEGIN IMMEDIATE")
                     operation(conn)
                     conn.execute("COMMIT")
                     return
                 except sqlite3.OperationalError as exc:
-                    try:
-                        conn.execute("ROLLBACK")
-                    except sqlite3.OperationalError:
-                        pass
-                    if "locked" not in str(exc).lower() or attempt == 2:
+                    self._rollback(conn)
+                    message = str(exc).lower()
+                    # A connection opened before the file went away keeps
+                    # working against the old inode; one opened after it was
+                    # replaced sees an empty database. Rebuild the schema once
+                    # and retry rather than failing for the life of the
+                    # process — this store is a cached resource, so nothing
+                    # else would ever reconnect.
+                    if "no such table" in message and not healed:
+                        healed = True
+                        log.warning("History schema missing at %s; recreating", self.path)
+                        try:
+                            _ensure_schema(conn)
+                        except sqlite3.OperationalError as schema_exc:
+                            raise HistoryStoreError(str(schema_exc)) from schema_exc
+                        continue
+                    if "locked" not in message or lock_attempts >= 2:
                         raise HistoryStoreError(str(exc)) from exc
-                    time.sleep(0.05 * (2**attempt))
+                    time.sleep(0.05 * (2**lock_attempts))
+                    lock_attempts += 1
                 except BaseException:
-                    try:
-                        conn.execute("ROLLBACK")
-                    except sqlite3.OperationalError:
-                        pass
+                    self._rollback(conn)
                     raise
+
+    def _write_best_effort(self, operation) -> bool:
+        """`_write`, but a store failure degrades the dashboard instead of
+        blanking it.
+
+        Everything on the collection path goes through here. A page render
+        that cannot append one CRC sample should still show temperature, RAID
+        and containers; before this, a single failed write propagated out of
+        the collector and took the whole page down with a traceback. The
+        sampler keeps the raising variant, because reporting exactly this is
+        what the sampler's `last_error` is for.
+        """
+        try:
+            self._write(operation)
+        except HistoryStoreError as exc:
+            self.last_write_error = str(exc)
+            log.warning("History write failed (%s); continuing without it", exc)
+            return False
+        self.last_write_error = None
+        return True
 
     # -- writes ----------------------------------------------------------
 
@@ -179,7 +251,7 @@ class HistoryStore:
         """Append one sample. `None` values are dropped, never stored as 0."""
         if value is None:
             return
-        self._write(
+        self._write_best_effort(
             lambda conn: conn.execute(
                 "INSERT INTO samples (metric, labels, ts, value) VALUES (?, ?, ?, ?)",
                 (metric, _encode_labels(labels), ts or time.time(), float(value)),
@@ -337,7 +409,11 @@ class HistoryStore:
             )
             result.append(StateChange(key, value, previous, True, now, first_seen=False))
 
-        self._write(transaction)
+        if not self._write_best_effort(transaction) or not result:
+            # Cannot say whether the value moved, so say it did not: callers
+            # gate their "X changed" events on `changed and not first_seen`,
+            # and a store hiccup must not invent a WAN IP change.
+            return StateChange(key, value, None, False, now, first_seen=True)
         return result[0]
 
     def get_state(self, key: str) -> StateChange | None:
@@ -353,14 +429,13 @@ class HistoryStore:
     def add_event(
         self, category: str, summary: str, detail: str = "", status: str = "INFO"
     ) -> None:
-        with self._write_lock:
-            conn = self._connection()
-            conn.execute(
+        self._write_best_effort(
+            lambda conn: conn.execute(
                 "INSERT INTO events (ts, category, summary, detail, status) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (time.time(), category, summary, detail, status),
             )
-            conn.commit()
+        )
 
     def recent_events(self, limit: int = 50, since: float | None = None) -> list[dict]:
         rows = self._read_all(

@@ -42,6 +42,7 @@ file is never torn, and the CLI is an operator action, not a request path.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -83,6 +84,52 @@ class StoreCorruptError(RuntimeError):
     write, or the corruption becomes permanent". Recovery is a human with a
     shell: restore the file or re-run `scripts/admin_bootstrap.py init`.
     """
+
+
+class StoreUnreadableError(StoreCorruptError):
+    """The file could not be *opened* — permissions, ownership, bad mount.
+
+    A subclass so every existing handler keeps failing closed, but a distinct
+    type because the repair is the opposite one. The content is presumed fine
+    here; only access to it is broken. Telling an operator to delete and
+    re-bootstrap in this state would destroy a perfectly good set of accounts
+    (and their TOTP enrolment and break-glass codes) to fix a chmod.
+    """
+
+
+def describe_access(path: Path) -> str:
+    """Ownership/mode of `path` versus this process, for a repair message.
+
+    The whole diagnosis of an EACCES here is "who owns it and who are we", and
+    that is exactly what the operator cannot see from the browser.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+
+    def _user(uid: int) -> str:
+        try:
+            import pwd  # POSIX only
+
+            return pwd.getpwuid(uid).pw_name
+        except (ImportError, KeyError):
+            return str(uid)
+
+    def _group(gid: int) -> str:
+        try:
+            import grp  # POSIX only
+
+            return grp.getgrgid(gid).gr_name
+        except (ImportError, KeyError):
+            return str(gid)
+
+    owner = f"{_user(info.st_uid)}:{_group(info.st_gid)}"
+    mode = oct(info.st_mode & 0o777)[2:].rjust(3, "0")
+    if not hasattr(os, "geteuid"):  # pragma: no cover - Windows
+        return f"owned by {owner}, mode {mode}"
+    running_as = f"{_user(os.geteuid())}:{_group(os.getegid())}"
+    return f"owned by {owner}, mode {mode}; the dashboard runs as {running_as}"
 
 
 @dataclass
@@ -159,9 +206,19 @@ class AccountStore:
         if not self.path.exists():
             return {}
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise StoreCorruptError(f"Account store unreadable: {exc}") from exc
+            text = self.path.read_text(encoding="utf-8")
+        except OSError as exc:
+            access = describe_access(self.path)
+            raise StoreUnreadableError(
+                f"Account store unreadable: {exc}"
+                + (f" — {access}" if access else "")
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise StoreCorruptError(f"Account store is not UTF-8: {exc}") from exc
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise StoreCorruptError(f"Account store is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict) or not isinstance(raw.get("accounts"), list):
             raise StoreCorruptError("Account store has an invalid top-level schema.")
         accounts: dict[str, Account] = {}
