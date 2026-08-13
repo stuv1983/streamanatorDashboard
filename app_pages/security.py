@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pandas as pd
 import streamlit as st
 
@@ -36,12 +39,116 @@ if settings.unifi.configured:
     unifi_args = (
         settings.unifi.controller_url,
         settings.unifi.api_key or "",
-        settings.unifi.verify_tls,
+        settings.unifi.tls_verify,
         settings.unifi.site,
     )
     controller_networks, network_error = unifi.get_networks(*unifi_args)
     firewall_zones, zones_error = unifi.get_firewall_zones(*unifi_args)
     firewall_policies, policies_error = unifi.get_firewall_policies(*unifi_args)
+
+
+def _nested_value(item: dict[str, Any], path: str) -> Any:
+    value: Any = item
+    for part in path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _display_value(value: Any) -> Any:
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return value
+
+
+def _api_collection(resource: str) -> tuple[list[dict[str, Any]], str]:
+    return unifi.get_api_collection(
+        settings.unifi.controller_url,
+        settings.unifi.api_key or "",
+        settings.unifi.tls_verify,
+        settings.unifi.site,
+        resource,
+    )
+
+
+def _api_detail(resource: str, resource_id: str) -> tuple[dict[str, Any], str]:
+    return unifi.get_api_detail(
+        settings.unifi.controller_url,
+        settings.unifi.api_key or "",
+        settings.unifi.tls_verify,
+        settings.unifi.site,
+        resource,
+        resource_id,
+    )
+
+
+def _show_api_collection(
+    items: list[dict[str, Any]],
+    error: str,
+    columns: dict[str, str],
+    *,
+    key: str,
+    empty: str,
+) -> None:
+    if error:
+        st.warning(error, icon=":material/cloud_off:")
+        return
+    if not items:
+        st.caption(empty)
+        return
+    safe_items = unifi.safe_for_display(items)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    label: _display_value(_nested_value(item, path))
+                    for label, path in columns.items()
+                }
+                for item in safe_items
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    if st.toggle(
+        "Show complete API payload (credentials redacted)",
+        key=f"security_unifi_payload_{key}",
+    ):
+        st.json(safe_items, expanded=1)
+
+
+def _show_detail_selector(
+    items: list[dict[str, Any]],
+    resource: str,
+    label: str,
+    *,
+    key: str,
+) -> None:
+    options = {
+        str(item.get("id")): str(item.get("name") or item.get("id"))
+        for item in items
+        if item.get("id")
+    }
+    if not options:
+        return
+    selected = st.selectbox(
+        f"Inspect {label}",
+        list(options),
+        format_func=options.get,
+        key=f"security_unifi_{key}_detail_selection",
+    )
+    if st.toggle(
+        f"Load selected {label} detail",
+        key=f"security_unifi_{key}_detail_load",
+    ):
+        detail, error = _api_detail(resource, selected)
+        if error:
+            st.warning(error)
+        else:
+            st.json(unifi.safe_for_display(detail), expanded=1)
 
 
 # Listening services --------------------------------------------------------
@@ -157,6 +264,59 @@ with st.expander(
         )
     else:
         st.caption("The controller returned no firewall policies.")
+    if settings.unifi.configured and st.toggle(
+        "Load complete firewall-policy payload",
+        key="security_firewall_policy_payload",
+    ):
+        raw_policies, raw_policies_error = _api_collection("firewall_policies")
+        if raw_policies_error:
+            st.warning(raw_policies_error)
+        else:
+            st.json(unifi.safe_for_display(raw_policies), expanded=1)
+            _show_detail_selector(
+                raw_policies,
+                "firewall_policy",
+                "firewall policy",
+                key="firewall_policy",
+            )
+
+
+acl_panel = st.expander(
+    ":material/rule: Access control rules",
+    key="unifi_acl_panel",
+    on_change="rerun",
+)
+if acl_panel.open:
+    with acl_panel:
+        if not settings.unifi.configured:
+            st.caption("Connect UniFi to read live ACL rules.")
+        else:
+            acl_rules, acl_error = _api_collection("acl_rules")
+            _show_api_collection(
+                acl_rules,
+                acl_error,
+                {
+                    "Order": "index",
+                    "Name": "name",
+                    "Description": "description",
+                    "Type": "type",
+                    "Enabled": "enabled",
+                    "Action": "action",
+                    "Protocols": "protocolFilter",
+                    "Network": "networkId",
+                    "Source": "sourceFilter",
+                    "Destination": "destinationFilter",
+                    "Enforcing devices": "enforcingDeviceFilter",
+                },
+                key="acl_rules",
+                empty="The controller returned no ACL rules.",
+            )
+            _show_detail_selector(
+                acl_rules,
+                "acl_rule",
+                "ACL rule",
+                key="acl_rule",
+            )
 
 
 # Intrusion detection -------------------------------------------------------
@@ -287,6 +447,86 @@ with st.expander(
     )
 
 
+policy_panel = st.expander(
+    ":material/policy: DNS and traffic policies",
+    key="unifi_dns_traffic_panel",
+    on_change="rerun",
+)
+if policy_panel.open:
+    with policy_panel:
+        if not settings.unifi.configured:
+            st.caption("Connect UniFi to read DNS and traffic-matching policies.")
+        else:
+            dns_policies, dns_error = _api_collection("dns_policies")
+            st.markdown("**DNS policies**")
+            _show_api_collection(
+                dns_policies,
+                dns_error,
+                {
+                    "Type": "type",
+                    "Enabled": "enabled",
+                    "Domain": "domain",
+                    "IPv4": "ipv4Address",
+                    "IPv6": "ipv6Address",
+                    "Target": "targetDomain",
+                    "Server": "serverDomain",
+                    "Port": "port",
+                    "TTL": "ttlSeconds",
+                },
+                key="dns_policies",
+                empty="The controller returned no DNS policies.",
+            )
+            _show_detail_selector(
+                dns_policies,
+                "dns_policy",
+                "DNS policy",
+                key="dns_policy",
+            )
+
+            matching_lists, matching_error = _api_collection(
+                "traffic_matching_lists"
+            )
+            st.markdown("**Traffic matching lists**")
+            _show_api_collection(
+                matching_lists,
+                matching_error,
+                {"Name": "name", "Type": "type", "ID": "id"},
+                key="traffic_matching_lists",
+                empty="The controller returned no traffic matching lists.",
+            )
+            matching_options = {
+                str(item.get("id")): str(item.get("name") or item.get("id"))
+                for item in matching_lists
+                if item.get("id")
+            }
+            if matching_options:
+                selected_matching_list = st.selectbox(
+                    "Inspect traffic matching list",
+                    list(matching_options),
+                    format_func=matching_options.get,
+                    key="unifi_matching_list_selection",
+                )
+                if st.toggle(
+                    "Load selected matching-list detail",
+                    key="unifi_matching_list_detail_load",
+                ):
+                    matching_detail, matching_detail_error = unifi.get_api_detail(
+                        settings.unifi.controller_url,
+                        settings.unifi.api_key or "",
+                        settings.unifi.tls_verify,
+                        settings.unifi.site,
+                        "traffic_matching_list",
+                        selected_matching_list,
+                    )
+                    if matching_detail_error:
+                        st.warning(matching_detail_error)
+                    else:
+                        st.json(
+                            unifi.safe_for_display(matching_detail),
+                            expanded=1,
+                        )
+
+
 # Live firewall zones -------------------------------------------------------
 
 zone_icon = ":material/shield:" if firewall_zones else ":material/info:"
@@ -332,6 +572,21 @@ with st.expander(
         )
     else:
         st.caption("The controller returned no firewall zones.")
+    if settings.unifi.configured and st.toggle(
+        "Load complete firewall-zone payload",
+        key="security_firewall_zone_payload",
+    ):
+        raw_zones, raw_zones_error = _api_collection("firewall_zones")
+        if raw_zones_error:
+            st.warning(raw_zones_error)
+        else:
+            st.json(unifi.safe_for_display(raw_zones), expanded=1)
+            _show_detail_selector(
+                raw_zones,
+                "firewall_zone",
+                "firewall zone",
+                key="firewall_zone",
+            )
 
 
 with st.expander("All security readings"):

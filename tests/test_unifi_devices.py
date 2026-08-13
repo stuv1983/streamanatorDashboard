@@ -144,6 +144,61 @@ def test_six_gigahertz_radios_are_labelled_correctly():
     assert unifi.RadioStats(frequency_ghz=2.4).band == "2.4 GHz"
 
 
+def test_radio_configuration_and_statistics_are_merged_by_band():
+    configured = unifi._radios(
+        {
+            "interfaces": {
+                "radios": [
+                    {
+                        "frequencyGHz": 5,
+                        "wlanStandard": "802.11ax",
+                        "channel": 44,
+                        "channelWidthMHz": 80,
+                    }
+                ]
+            }
+        }
+    )
+    statistical = unifi._radios(
+        {"interfaces": {"radios": [{"frequencyGHz": 5, "txRetriesPct": 3.5}]}}
+    )
+    merged = unifi._merge_radios(configured, statistical)
+    assert len(merged) == 1
+    assert merged[0].wlan_standard == "802.11ax"
+    assert merged[0].channel == 44
+    assert merged[0].channel_width_mhz == 80
+    assert merged[0].tx_retries_percent == 3.5
+
+
+def test_physical_port_state_is_parsed_without_actions():
+    ports = unifi._ports(
+        {
+            "interfaces": {
+                "ports": [
+                    {
+                        "idx": 8,
+                        "state": "UP",
+                        "connector": "RJ45",
+                        "speedMbps": 1000,
+                        "maxSpeedMbps": 2500,
+                        "poe": {
+                            "enabled": True,
+                            "state": "UP",
+                            "standard": "802.3at",
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    assert len(ports) == 1
+    assert ports[0].index == 8
+    assert ports[0].speed_mbps == 1000
+    assert ports[0].max_speed_mbps == 2500
+    assert ports[0].poe_enabled is True
+    assert ports[0].poe_standard == "802.3at"
+
+
 def test_uplink_rates_are_bits_and_stay_bits_in_the_model():
     """The model carries what the API reports; conversion happens at the edge.
 
