@@ -1,16 +1,10 @@
-"""Security — listener inventory, external exposure and IDS/IPS.
-
-The external-exposure section makes a deliberate distinction between "expected"
-and "detected". It does not scan the Internet: probing is explicit, configured
-and limited to the small list of ports already believed to be published.
-"""
+"""Security — listener inventory, exposure, IDS/IPS, and segmentation."""
 
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from components.cards import not_configured_card
 from components.charts import magnitude_bar
 from components.layout import health_table, page_header, read_only_notice
 from components.theme import style
@@ -26,133 +20,185 @@ raw = snapshot.raw.get("security", {})
 
 page_header(
     "Security",
-    "Listening services, external exposure and intrusion events",
+    "Listening services, external exposure, and network boundaries",
     snapshot.collected_at,
 )
 
-# ---------------------------------------------------------------------------
-# Local listeners
-# ---------------------------------------------------------------------------
+# Gather the read-only controller views once. These helpers are cached, so the
+# five compact UI sections do not create duplicate controller requests.
+controller_networks = []
+network_error = ""
+firewall_zones = []
+zones_error = ""
+firewall_policies = []
+policies_error = ""
+if settings.unifi.configured:
+    unifi_args = (
+        settings.unifi.controller_url,
+        settings.unifi.api_key or "",
+        settings.unifi.verify_tls,
+        settings.unifi.site,
+    )
+    controller_networks, network_error = unifi.get_networks(*unifi_args)
+    firewall_zones, zones_error = unifi.get_firewall_zones(*unifi_args)
+    firewall_policies, policies_error = unifi.get_firewall_policies(*unifi_args)
 
-st.markdown("### Listening services")
+
+# Listening services --------------------------------------------------------
 
 listeners = raw.get("listeners") or []
 unexpected = raw.get("unexpected_listeners") or []
+exposed_listeners = [entry for entry in listeners if not entry.loopback_only]
+listener_icon = ":material/warning:" if unexpected or not listeners else ":material/check_circle:"
 
-if not listeners:
-    st.warning(
-        "`ss` could not be run, so local listeners are unknown.",
-        icon=":material/warning:",
-    )
-else:
-    exposed = [entry for entry in listeners if not entry.loopback_only]
-    rows = []
-    for entry in sorted(exposed, key=lambda e: e.port):
-        expected_service = EXPECTED_LISTENERS.get(entry.port)
-        is_expected = expected_service is not None
-        rows.append(
-            {
-                "Status": (
-                    f"{style(Status.HEALTHY).icon} expected"
-                    if is_expected
-                    else f"{style(Status.WARNING).icon} unexpected"
-                ),
-                "Port": entry.port,
-                "Address": entry.address,
-                "Service": expected_service or (entry.process or "unidentified"),
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    st.caption(
-        f":gray[{len(exposed)} non-loopback listeners, "
-        f"{len(listeners) - len(exposed)} loopback-only. Process names appear only "
-        f"for sockets owned by the dashboard user — the dashboard runs "
-        f"unprivileged by design.]"
-    )
-
-    if unexpected:
+with st.expander(
+    f"{listener_icon} Listening services · {len(exposed_listeners)} network-facing · "
+    f"{len(unexpected)} unexpected",
+    expanded=bool(unexpected) or not listeners,
+):
+    if not listeners:
         st.warning(
-            "Unexpected listeners: "
-            + ", ".join(f"{e.address}:{e.port}" for e in unexpected)
-            + ". Identify them with `sudo ss -lntup`, then either add them to "
-            "`EXPECTED_LISTENERS` in config.py or shut them down.",
+            "`ss` could not be run, so local listeners are unknown.",
             icon=":material/warning:",
         )
+    else:
+        rows = []
+        for entry in sorted(exposed_listeners, key=lambda item: item.port):
+            expected_service = EXPECTED_LISTENERS.get(entry.port)
+            rows.append(
+                {
+                    "Status": (
+                        f"{style(Status.HEALTHY).icon} expected"
+                        if expected_service is not None
+                        else f"{style(Status.WARNING).icon} unexpected"
+                    ),
+                    "Port": entry.port,
+                    "Address": entry.address,
+                    "Service": expected_service or entry.process or "unidentified",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption(
+            f"{len(exposed_listeners)} non-loopback listeners and "
+            f"{len(listeners) - len(exposed_listeners)} loopback-only. Process "
+            "names appear only for sockets owned by the unprivileged dashboard user."
+        )
+        if unexpected:
+            st.warning(
+                "Unexpected listeners: "
+                + ", ".join(f"{entry.address}:{entry.port}" for entry in unexpected)
+                + ". Identify them with `sudo ss -lntup`, then document or stop them.",
+                icon=":material/warning:",
+            )
 
-# ---------------------------------------------------------------------------
-# External exposure
-# ---------------------------------------------------------------------------
 
-st.markdown("### External exposure")
+# External exposure ---------------------------------------------------------
 
-st.caption(
-    "Ports believed reachable from the Internet. The dashboard does not perform "
-    "outbound port scanning; this is a declared inventory that should be checked "
-    "against the UniFi port-forward and NAT rules."
-)
-
-exposure_rows = []
-for port in settings.external_ports:
-    exposure_rows.append(
+review_ports = [port for port in settings.external_ports if not port.expected]
+exposure_icon = ":material/warning:" if review_ports else ":material/check_circle:"
+with st.expander(
+    f"{exposure_icon} External exposure · {len(settings.external_ports)} declared ports · "
+    f"{len(review_ports)} need review",
+    expanded=bool(review_ports),
+):
+    st.caption(
+        "Declared Internet-facing ports. The dashboard does not scan the Internet; "
+        "compare this inventory with UniFi NAT, port-forward, and UPnP rules."
+    )
+    exposure_rows = [
         {
             "Port": port.port,
             "Expected": "yes" if port.expected else "NEEDS REVIEW",
             "Service": port.service,
             "Note": port.note,
         }
+        for port in settings.external_ports
+    ]
+    st.dataframe(pd.DataFrame(exposure_rows), hide_index=True, width="stretch")
+
+    if review_ports:
+        st.warning(
+            "TCP 80 and 443 need review. Confirm the receiving service in UniFi "
+            "port forwards, NAT rules, UPnP mappings, and the reverse proxy.",
+            icon=":material/warning:",
+        )
+    st.info(
+        "TCP 32400 (Plex) is Internet-facing and has previously attracted IDS/IPS "
+        "scan traffic. Keep Plex patched and periodically reconsider direct exposure.",
+        icon=":material/info:",
     )
-st.dataframe(pd.DataFrame(exposure_rows), hide_index=True, width="stretch")
 
-st.warning(
-    "**TCP 80 and 443 need review.** Both were observed open from the Internet, "
-    "but the receiving service is undocumented. Audit the UniFi port forwards, "
-    "NAT rules, UPnP-created mappings and any reverse proxy before treating them "
-    "as intentional.",
-    icon=":material/warning:",
-)
+    st.markdown("#### Live UniFi firewall policies")
+    if not settings.unifi.configured:
+        st.caption("Connect UniFi to compare the declared inventory with live rules.")
+    elif policies_error:
+        st.info(policies_error, icon=":material/cloud_off:")
+    elif firewall_policies:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Name": policy.name,
+                        "Action": policy.action or "—",
+                        "Enabled": policy.enabled,
+                        "Predefined": policy.predefined,
+                        "Source": policy.source or "—",
+                        "Destination": policy.destination or "—",
+                    }
+                    for policy in firewall_policies
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption(
+            "Rules are configuration, not traffic counters. The Integration API "
+            "does not expose per-rule hit or block counts."
+        )
+    else:
+        st.caption("The controller returned no firewall policies.")
 
-st.info(
-    "**TCP 32400 (Plex) is Internet-facing** and has previously attracted IDS/IPS "
-    "scanning traffic from CINS Army, DShield and ET SCAN feeds. Keep Plex "
-    "patched and periodically reconsider whether direct exposure is still needed "
-    "versus relaying through Plex's own remote access.",
-    icon=":material/info:",
-)
 
-# ---------------------------------------------------------------------------
-# IDS / IPS
-# ---------------------------------------------------------------------------
-
-st.markdown("### Intrusion detection")
+# Intrusion detection -------------------------------------------------------
 
 unifi_state = raw.get("unifi")
-if unifi_state is not None and not unifi_state.configured:
-    not_configured_card(
-        "UniFi IDS/IPS events",
-        "Without UniFi integration the dashboard cannot show IDS/IPS alerts, "
-        "blocked WAN connections, inter-VLAN firewall denials or per-client "
-        "traffic. An empty list here would be misleading, so nothing is shown.",
-        steps=unifi_state.steps,
-        source="unifi",
-    )
-elif not unifi.ids_available(settings.unifi):
-    not_configured_card(
-        "UniFi IDS/IPS events",
-        "UniFi is connected, but IDS/IPS alarm history is only exposed by the "
-        "legacy controller API, which needs an interactive login that this "
-        "account's MFA blocks. Gateway health and client counts work; alarm "
-        "history does not. Review IDS/IPS events in the UniFi console itself.",
-        steps=(
-            "In the UniFi console: Insights → Threat Management, or "
-            "Settings → Security, to review IDS/IPS events.",
-            "Pay particular attention to traffic aimed at 10.0.40.100:32400 "
-            "(Plex), which has previously attracted scanning.",
-        ),
-        source="unifi",
-    )
+events = raw.get("ids_events") or []
+ids_supported = settings.unifi.configured and unifi.ids_available(settings.unifi)
+if events:
+    ids_icon, ids_summary = ":material/warning:", f"{len(events)} recent events"
+elif ids_supported:
+    ids_icon, ids_summary = ":material/check_circle:", "no recent events"
 else:
-    events = raw.get("ids_events") or []
-    if not events:
+    ids_icon, ids_summary = ":material/info:", "controller history unavailable"
+
+with st.expander(
+    f"{ids_icon} Intrusion detection · {ids_summary}",
+    expanded=bool(events),
+):
+    if unifi_state is not None and not unifi_state.configured:
+        st.info(
+            "Without UniFi integration, IDS/IPS alerts, WAN blocks, and inter-VLAN "
+            "denials cannot be shown. An empty list would be misleading.",
+            icon=":material/settings:",
+        )
+        if unifi_state.steps:
+            st.markdown("**Integration steps**")
+            for index, step in enumerate(unifi_state.steps, start=1):
+                st.markdown(f"{index}. {step}")
+        st.caption("Source: UniFi")
+    elif not ids_supported:
+        st.info(
+            "The Integration API does not expose IDS/IPS alarm history. Gateway, "
+            "network, firewall-zone, and policy configuration remain available.",
+            icon=":material/info:",
+        )
+        st.markdown(
+            "**Review manually**\n\n"
+            "1. Open Insights → Threat Management in the UniFi console.\n"
+            "2. Pay particular attention to traffic targeting Plex on port 32400."
+        )
+        st.caption("Source: UniFi")
+    elif not events:
         st.success("No recent IDS/IPS events.", icon=":material/check_circle:")
     else:
         st.dataframe(
@@ -173,63 +219,97 @@ else:
             width="stretch",
         )
 
-# ---------------------------------------------------------------------------
-# Segmentation
-# ---------------------------------------------------------------------------
 
-st.markdown("### Network segmentation")
+# Network segmentation ------------------------------------------------------
 
-st.dataframe(
-    pd.DataFrame(
-        {
-            "VLAN": [v.vlan_id for v in settings.vlans],
-            "Name": [v.name for v in settings.vlans],
-            "Subnet": [v.subnet for v in settings.vlans],
-            "Zone": ["trusted" if v.trusted else "restricted" for v in settings.vlans],
+configured_by_vlan = {vlan.vlan_id: vlan for vlan in settings.vlans}
+controller_by_vlan = {
+    network.vlan_id: network
+    for network in controller_networks
+    if network.vlan_id is not None
+}
+drifted_vlans = [
+    vlan_id
+    for vlan_id, configured in configured_by_vlan.items()
+    if vlan_id in controller_by_vlan
+    and controller_by_vlan[vlan_id].name != configured.name
+]
+segmentation_icon = ":material/warning:" if drifted_vlans else ":material/lan:"
+with st.expander(
+    f"{segmentation_icon} Network segmentation · {len(settings.vlans)} documented VLANs · "
+    f"{len(controller_networks)} live networks · {len(drifted_vlans)} name drifts",
+    expanded=bool(drifted_vlans),
+):
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "VLAN": [vlan.vlan_id for vlan in settings.vlans],
+                "Documented name": [vlan.name for vlan in settings.vlans],
+                "Live name": [
+                    controller_by_vlan[vlan.vlan_id].name
+                    if vlan.vlan_id in controller_by_vlan
+                    else "—"
+                    for vlan in settings.vlans
+                ],
+                "Subnet": [
+                    controller_by_vlan[vlan.vlan_id].subnet
+                    if vlan.vlan_id in controller_by_vlan
+                    and controller_by_vlan[vlan.vlan_id].subnet
+                    else vlan.subnet
+                    for vlan in settings.vlans
+                ],
+                "Purpose": [
+                    controller_by_vlan[vlan.vlan_id].purpose or "—"
+                    if vlan.vlan_id in controller_by_vlan
+                    else "—"
+                    for vlan in settings.vlans
+                ],
+                "Intent": [
+                    "trusted" if vlan.trusted else "restricted"
+                    for vlan in settings.vlans
+                ],
+            }
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    if network_error:
+        st.caption(f"Live controller networks unavailable: {network_error}")
+    if drifted_vlans:
+        st.warning(
+            "Controller names differ from the documented configuration for VLAN(s): "
+            + ", ".join(str(vlan_id) for vlan_id in drifted_vlans),
+            icon=":material/warning:",
+        )
+    st.caption(
+        "This server sits in Media-DMZ (VLAN 40). It should have no unrestricted "
+        "path into Management (VLAN 50), while Management retains access inward."
+    )
+
+
+# Live firewall zones -------------------------------------------------------
+
+zone_icon = ":material/shield:" if firewall_zones else ":material/info:"
+with st.expander(
+    f"{zone_icon} Live firewall zones · "
+    f"{len(firewall_zones) if settings.unifi.configured else 'UniFi not connected'}",
+    expanded=False,
+):
+    if not settings.unifi.configured:
+        st.caption(
+            "Connect UniFi in Admin → API keys to verify live zone membership."
+        )
+    elif zones_error:
+        st.warning(f"Firewall zones unavailable: {zones_error}")
+    elif firewall_zones:
+        id_to_network = {
+            network.network_id: network.name for network in controller_networks
         }
-    ),
-    hide_index=True,
-    width="stretch",
-)
-
-st.caption(
-    ":gray[This server sits in the Media-DMZ (VLAN 40), which hosts the "
-    "Internet-reachable services. The intended policy is that Media-DMZ has no "
-    "unrestricted path into Management (VLAN 50), while Management retains "
-    "administrative access inward.]"
-)
-
-# -- Live firewall zones, when UniFi is connected -------------------------
-#
-# Zones rather than policies: the policies endpoint 500s on the live firmware,
-# and zones already answer the question segmentation is *for* — which networks
-# share a trust boundary. Reading them from the controller turns "the intended
-# policy is…" into "the controller currently reports…".
-if settings.unifi.configured:
-    from services import unifi as unifi_service
-
-    zones, zones_error = unifi_service.get_firewall_zones(
-        settings.unifi.controller_url,
-        settings.unifi.api_key or "",
-        settings.unifi.verify_tls,
-        settings.unifi.site,
-    )
-    networks, _ = unifi_service.get_networks(
-        settings.unifi.controller_url,
-        settings.unifi.api_key or "",
-        settings.unifi.verify_tls,
-        settings.unifi.site,
-    )
-    id_to_network = {n.network_id: n.name for n in networks}
-
-    st.markdown("#### Live firewall zones")
-    if zones_error:
-        st.caption(f":gray[Firewall zones unavailable: {zones_error}]")
-    elif zones:
         zone_rows = []
-        for zone in sorted(zones, key=lambda z: z.name.lower()):
+        for zone in sorted(firewall_zones, key=lambda item: item.name.lower()):
             members = [
-                id_to_network.get(nid, nid[:8]) for nid in zone.network_ids
+                id_to_network.get(network_id, network_id[:8])
+                for network_id in zone.network_ids
             ]
             zone_rows.append(
                 {
@@ -247,18 +327,13 @@ if settings.unifi.configured:
         if zone_chart is not None:
             st.altair_chart(zone_chart, width="stretch")
         st.caption(
-            ":gray[Read live from the controller. Confirm Media-DMZ and "
-            "Management sit in different zones, and that no zone silently "
-            "merges the two. This shows the zone membership, not the "
-            "rule-by-rule policy between zones — the policies endpoint is "
-            "erroring on the current UniFi firmware.]"
+            "Confirm that Media-DMZ and Management remain in separate zones. "
+            "Zone membership is live controller data, not a rule-hit counter."
         )
-else:
-    st.caption(
-        ":gray[Connect UniFi (Admin → API keys) to read the live zone-based "
-        "firewall configuration and confirm it still matches this intent.]"
-    )
+    else:
+        st.caption("The controller returned no firewall zones.")
 
-st.divider()
-health_table(security.readings if security else [])
+
+with st.expander("All security readings"):
+    health_table(security.readings if security else [])
 read_only_notice()

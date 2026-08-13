@@ -23,6 +23,7 @@ from components.layout import (
 from config import TIME_RANGES, get_settings
 from core.collector import M_FS_USED
 from core.runtime import get_snapshot, trend_series
+from core.status import Status
 from services.system import get_disk_io_rates
 from utils.formatting import format_date, human_bytes, human_bytes_per_second
 
@@ -49,9 +50,19 @@ for filesystem in settings.filesystems:
 
     usage = reading.extra.get("usage")
     forecast = reading.extra.get("forecast")
+    free = (
+        f"{human_bytes(usage.free_bytes)} free"
+        if usage is not None
+        else "free space unknown"
+    )
+    value = f"{reading.value}% used" if reading.value is not None else "usage unknown"
+    icon = f":material/{reading.status.icon}:"
 
-    with st.container(border=True):
-        st.markdown(f"### {filesystem.mountpoint}")
+    with st.expander(
+        f"{icon} {filesystem.mountpoint} · {value} · {free}",
+        expanded=reading.status in {Status.WARNING, Status.CRITICAL},
+    ):
+        st.markdown(f"#### {filesystem.mountpoint}")
         st.caption(filesystem.label)
 
         summary, detail_col = st.columns([1, 2])
@@ -130,7 +141,10 @@ for filesystem in settings.filesystems:
             if chart is not None:
                 st.altair_chart(chart, width="stretch")
                 chart_source_caption(samples)
-                with st.expander("Table view"):
+                if st.toggle(
+                    "Show table view",
+                    key=f"storage_table_{filesystem.mountpoint}",
+                ):
                     st.dataframe(
                         to_table(
                             [(ts, value / (1024**4)) for ts, value in samples],

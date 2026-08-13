@@ -1,11 +1,11 @@
-"""Media — Plex, Immich and the download/indexer stack."""
+"""Media — Plex, Immich, and the download/indexer stack."""
 
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from components.cards import metric_card, not_configured_card, reading_card
+from components.cards import metric_card, reading_card
 from components.layout import page_header, read_only_notice
 from components.theme import style
 from config import get_settings
@@ -23,11 +23,10 @@ from utils.formatting import human_bytes, human_bytes_per_second
 settings = get_settings()
 snapshot = get_snapshot()
 applications = snapshot.component("applications")
-probes = snapshot.raw.get("applications", {}).get("probes", {})
 
 page_header(
     "Media",
-    "Plex, Immich and the VPN-routed download stack",
+    "Plex, Immich, and the VPN-routed download stack",
     snapshot.collected_at,
 )
 
@@ -38,163 +37,169 @@ def _probe_reading(key: str):
     return next((r for r in applications.readings if r.key == f"probe.{key}"), None)
 
 
-# ---------------------------------------------------------------------------
-# Plex
-# ---------------------------------------------------------------------------
+def _state_label(reachable: bool | None, configured: bool = True) -> tuple[str, str]:
+    if not configured:
+        return ":material/settings_alert:", "Not configured"
+    if reachable is True:
+        return ":material/check_circle:", "Up"
+    if reachable is False:
+        return ":material/error:", "Down"
+    return ":material/help:", "Unknown"
 
-st.markdown("### Plex")
-st.caption(
-    "Runs as a native systemd service (`plexmediaserver.service`) on this host, "
-    "not in Docker — the `plex` container exited months ago and is not the live "
-    "instance."
-)
+
+# Plex ----------------------------------------------------------------------
 
 plex_endpoint = settings.endpoint("plex")
-plex_base = (plex_endpoint.url.replace("/identity", "") if plex_endpoint else "")
+plex_base = plex_endpoint.url.replace("/identity", "") if plex_endpoint else ""
 plex = get_plex_status(plex_base, settings.api.plex_token)
+plex_icon, plex_state = _state_label(plex.reachable, plex.configured)
+plex_summary = (
+    f"{plex_icon} Plex · {plex_state} · {plex.stream_count or 0} active streams"
+    f" · {plex.version or 'version unknown'}"
+)
 
-columns = st.columns(5)
-with columns[0]:
-    metric_card(
-        "Availability",
-        "Up" if plex.reachable else ("Down" if plex.reachable is False else "Unknown"),
+with st.expander(plex_summary, expanded=plex.reachable is False):
+    st.caption(
+        "Runs as the native `plexmediaserver.service` on this host; the old Plex "
+        "container is not the live instance."
     )
-with columns[1]:
-    metric_card("Version", plex.version or "—")
-with columns[2]:
-    metric_card(
-        "Active streams",
-        str(plex.stream_count) if plex.configured and plex.reachable else "—",
-    )
-with columns[3]:
-    metric_card(
-        "Transcodes",
-        str(plex.transcode_count) if plex.configured and plex.reachable else "—",
-    )
-with columns[4]:
-    metric_card(
-        "Remote streams",
-        str(plex.remote_count) if plex.configured and plex.reachable else "—",
-    )
-
-if not plex.configured:
-    not_configured_card(
-        "Plex session detail",
-        "PLEX_TOKEN is not set, so availability and version are shown but active "
-        "sessions, transcode decisions and bandwidth are not.",
-        steps=(
-            "Obtain a token: https://support.plex.tv/articles/204059436",
-            "Add PLEX_TOKEN to the dashboard .env (never to source control).",
-            "Optionally deploy Tautulli and set TAUTULLI_URL / TAUTULLI_API_KEY "
-            "for richer session history.",
+    columns = st.columns(5)
+    for column, (label, value) in zip(
+        columns,
+        (
+            ("Availability", plex_state),
+            ("Version", plex.version or "—"),
+            ("Active streams", str(plex.stream_count) if plex.reachable else "—"),
+            ("Transcodes", str(plex.transcode_count) if plex.reachable else "—"),
+            ("Remote streams", str(plex.remote_count) if plex.reachable else "—"),
         ),
-        source="plex api",
-    )
-elif plex.sessions:
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "User": [s.user for s in plex.sessions],
-                "Title": [s.title for s in plex.sessions],
-                "Player": [s.player for s in plex.sessions],
-                "Decision": [s.decision for s in plex.sessions],
-                "Location": ["local" if s.local else "remote" for s in plex.sessions],
-                "Bandwidth": [
-                    f"{s.bandwidth_kbps:,.0f} kbps" if s.bandwidth_kbps else "—"
-                    for s in plex.sessions
-                ],
-            }
-        ),
-        hide_index=True,
-        width="stretch",
-    )
-elif plex.reachable:
-    st.caption("No active streams.")
+    ):
+        with column:
+            metric_card(label, value)
 
-if plex.error:
-    st.caption(f":gray[{plex.error}]")
+    if not plex.configured:
+        st.info(
+            "PLEX_TOKEN is not set. Availability and version remain visible, but "
+            "session, transcode, and bandwidth details are unavailable.",
+            icon=":material/settings:",
+        )
+        st.markdown(
+            "**To enable session detail**\n\n"
+            "1. Obtain a token from the Plex support instructions.\n"
+            "2. Add `PLEX_TOKEN` through the dashboard admin settings."
+        )
+        st.caption("Source: Plex API")
+    elif plex.sessions:
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "User": [session.user for session in plex.sessions],
+                    "Title": [session.title for session in plex.sessions],
+                    "Player": [session.player for session in plex.sessions],
+                    "Decision": [session.decision for session in plex.sessions],
+                    "Location": [
+                        "local" if session.local else "remote"
+                        for session in plex.sessions
+                    ],
+                    "Bandwidth": [
+                        f"{session.bandwidth_kbps:,.0f} kbps"
+                        if session.bandwidth_kbps
+                        else "—"
+                        for session in plex.sessions
+                    ],
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    elif plex.reachable:
+        st.caption("No active streams.")
+    if plex.error:
+        st.caption(f":gray[{plex.error}]")
 
-st.divider()
 
-# ---------------------------------------------------------------------------
-# Immich
-# ---------------------------------------------------------------------------
-
-st.markdown("### Immich")
+# Immich --------------------------------------------------------------------
 
 immich_endpoint = settings.endpoint("immich")
 immich_base = (
     immich_endpoint.url.replace("/api/server/ping", "") if immich_endpoint else ""
 )
 immich = get_immich_status(immich_base)
-
-immich_columns = st.columns(4)
-with immich_columns[0]:
-    metric_card(
-        "API",
-        "Up" if immich.reachable else ("Down" if immich.reachable is False else "Unknown"),
-    )
-with immich_columns[1]:
-    metric_card("Version", immich.version or "—")
-
-# Container-level health for the Immich stack.
 container_readings = [
-    r
-    for r in (applications.readings if applications else [])
-    if r.key.startswith("container.immich")
+    reading
+    for reading in (applications.readings if applications else [])
+    if reading.key.startswith("container.immich")
 ]
-with immich_columns[2]:
-    healthy = sum(1 for r in container_readings if r.status is Status.HEALTHY)
-    metric_card("Containers healthy", f"{healthy} / {len(container_readings)}")
-with immich_columns[3]:
+healthy_containers = sum(
+    1 for reading in container_readings if reading.status is Status.HEALTHY
+)
+immich_icon, immich_state = _state_label(immich.reachable)
+
+with st.expander(
+    f"{immich_icon} Immich · {immich_state} · "
+    f"{healthy_containers}/{len(container_readings)} containers healthy · "
+    f"{immich.version or 'version unknown'}",
+    expanded=immich.reachable is False,
+):
     storage = immich.detail.get("storage", {})
-    metric_card(
-        "Library size",
-        human_bytes(storage.get("diskUse")) if isinstance(storage, dict) and storage.get("diskUse") else "—",
-    )
-
-if container_readings:
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Status": [f"{style(r.status).icon} {r.status.value}" for r in container_readings],
-                "Component": [r.label for r in container_readings],
-                "State": [str(r.value) for r in container_readings],
-                "Detail": [r.detail for r in container_readings],
-            }
+    columns = st.columns(4)
+    values = (
+        ("API", immich_state),
+        ("Version", immich.version or "—"),
+        ("Containers healthy", f"{healthy_containers} / {len(container_readings)}"),
+        (
+            "Library size",
+            human_bytes(storage.get("diskUse"))
+            if isinstance(storage, dict) and storage.get("diskUse")
+            else "—",
         ),
-        hide_index=True,
-        width="stretch",
     )
+    for column, (label, value) in zip(columns, values):
+        with column:
+            metric_card(label, value)
+    if container_readings:
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Status": [
+                        f"{style(reading.status).icon} {reading.status.value}"
+                        for reading in container_readings
+                    ],
+                    "Component": [reading.label for reading in container_readings],
+                    "State": [str(reading.value) for reading in container_readings],
+                    "Detail": [reading.detail for reading in container_readings],
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
 
-st.divider()
 
-# ---------------------------------------------------------------------------
-# Download stack
-# ---------------------------------------------------------------------------
+# Download and indexer stack ------------------------------------------------
 
 st.markdown("### Download & indexer stack")
 vpn_component = snapshot.component("vpn")
 if vpn_component is not None and vpn_component.status is not Status.HEALTHY:
     st.warning(
-        "Every service below routes through Gluetun, and the tunnel is not "
-        "healthy right now — expect them all to fail together. Check the VPN "
-        "page before troubleshooting any of them individually.",
+        "These services route through Gluetun, and the tunnel is not healthy. "
+        "Check the VPN page before troubleshooting them individually.",
         icon=":material/vpn_lock:",
     )
 
-# SABnzbd
 sab_endpoint = settings.endpoint("sabnzbd")
 sab = get_sabnzbd_status(
     sab_endpoint.url if sab_endpoint else "", settings.api.sabnzbd_api_key
 )
-with st.container(border=True):
-    st.markdown("**SABnzbd**")
+sab_icon, sab_state = _state_label(sab.reachable, sab.configured)
+with st.expander(
+    f"{sab_icon} SABnzbd · {sab_state} · {sab.queue_size or 0} queued · "
+    f"{human_bytes_per_second(sab.speed_bytes_per_sec)}",
+    expanded=sab.reachable is False and sab.configured,
+):
     if not sab.configured:
         st.caption(
-            "SABNZBD_API_KEY not set — queue, speed and disk-space detail "
-            "unavailable. Availability is still probed. "
-            "Run `scripts/extract_api_keys.sh` to populate it."
+            "SABNZBD_API_KEY is not set. Availability is still probed, but queue, "
+            "speed, and disk-space detail are unavailable."
         )
         reading = _probe_reading("sabnzbd")
         if reading:
@@ -202,64 +207,56 @@ with st.container(border=True):
     elif not sab.reachable:
         st.error(f"SABnzbd API error: {sab.error}", icon=":material/error:")
     else:
-        sab_columns = st.columns(5)
-        with sab_columns[0]:
-            metric_card("State", "Paused" if sab.paused else "Active")
-        with sab_columns[1]:
-            metric_card("Speed", human_bytes_per_second(sab.speed_bytes_per_sec))
-        with sab_columns[2]:
-            metric_card("Queue", str(sab.queue_size) if sab.queue_size is not None else "—")
-        with sab_columns[3]:
-            metric_card(
+        columns = st.columns(5)
+        values = (
+            ("State", "Paused" if sab.paused else "Active"),
+            ("Speed", human_bytes_per_second(sab.speed_bytes_per_sec)),
+            ("Queue", str(sab.queue_size) if sab.queue_size is not None else "—"),
+            (
                 "Remaining",
                 f"{sab.remaining_mb / 1024:.1f} GB" if sab.remaining_mb else "—",
-            )
-        with sab_columns[4]:
-            metric_card(
-                "Free space",
-                f"{sab.disk_free_gb:.0f} GB" if sab.disk_free_gb else "—",
-            )
+            ),
+            ("Free space", f"{sab.disk_free_gb:.0f} GB" if sab.disk_free_gb else "—"),
+        )
+        for column, (label, value) in zip(columns, values):
+            with column:
+                metric_card(label, value)
         if sab.current_job:
             st.caption(f"Current job: {sab.current_job}")
 
-# qBittorrent
 qbit_endpoint = settings.endpoint("qbittorrent")
 qbit = get_qbittorrent_status(
     qbit_endpoint.url if qbit_endpoint else "",
     settings.api.qbittorrent_user,
     settings.api.qbittorrent_password,
 )
-with st.container(border=True):
-    st.markdown("**qBittorrent**")
+qbit_icon, qbit_state = _state_label(qbit.reachable)
+with st.expander(
+    f"{qbit_icon} qBittorrent · {qbit_state} · {qbit.total_torrents or 0} torrents · "
+    f"{qbit.errored or 0} errors",
+    expanded=qbit.reachable is False or bool(qbit.errored),
+):
     if not qbit.reachable:
         st.caption(qbit.error or "Not reachable.")
         reading = _probe_reading("qbittorrent")
         if reading:
             reading_card(reading)
     else:
-        qbit_columns = st.columns(6)
-        for column, (label, value) in zip(
-            qbit_columns,
-            (
-                ("Download", human_bytes_per_second(qbit.download_bytes_per_sec)),
-                ("Upload", human_bytes_per_second(qbit.upload_bytes_per_sec)),
-                ("Torrents", str(qbit.total_torrents or 0)),
-                ("Downloading", str(qbit.downloading or 0)),
-                ("Seeding", str(qbit.seeding or 0)),
-                ("Errored", str(qbit.errored or 0)),
-            ),
-        ):
+        columns = st.columns(6)
+        values = (
+            ("Download", human_bytes_per_second(qbit.download_bytes_per_sec)),
+            ("Upload", human_bytes_per_second(qbit.upload_bytes_per_sec)),
+            ("Torrents", str(qbit.total_torrents or 0)),
+            ("Downloading", str(qbit.downloading or 0)),
+            ("Seeding", str(qbit.seeding or 0)),
+            ("Errored", str(qbit.errored or 0)),
+        )
+        for column, (label, value) in zip(columns, values):
             with column:
                 metric_card(label, value)
         if qbit.errored:
-            st.warning(
-                f"{qbit.errored} torrent(s) in an error state.",
-                icon=":material/warning:",
-            )
+            st.warning(f"{qbit.errored} torrent(s) are in an error state.")
 
-# *arr services
-st.markdown("**Sonarr / Radarr / Prowlarr**")
-arr_rows = []
 for key, display, api_key in (
     ("sonarr", "Sonarr", settings.api.sonarr_api_key),
     ("radarr", "Radarr", settings.api.radarr_api_key),
@@ -267,41 +264,36 @@ for key, display, api_key in (
 ):
     endpoint = settings.endpoint(key)
     base = endpoint.url.replace("/ping", "") if endpoint else ""
-    status = get_arr_status(key, display, base, api_key)
+    service = get_arr_status(key, display, base, api_key)
     probe = _probe_reading(key)
-    arr_rows.append(
-        {
-            "Service": display,
-            "Probe": probe.status.value if probe else "—",
-            "API": "up"
-            if status.reachable
-            else ("not configured" if not status.configured else "down"),
-            "Version": status.version or "—",
-            "Health warnings": len(status.health_warnings) if status.configured else "—",
-            "Queue": status.queue_count if status.queue_count is not None else "—",
-            "Missing": status.missing_count if status.missing_count is not None else "—",
-            "Indexers": (
-                f"{status.indexers_total - (status.indexers_failing or 0)}/{status.indexers_total}"
-                if status.indexers_total is not None
-                else "—"
+    icon, state = _state_label(service.reachable, service.configured)
+    warning_count = len(service.health_warnings)
+    with st.expander(
+        f"{icon} {display} · {state} · {warning_count} health warnings · "
+        f"{service.queue_count if service.queue_count is not None else 'queue unknown'}",
+        expanded=service.reachable is False or warning_count > 0,
+    ):
+        columns = st.columns(6)
+        values = (
+            ("Probe", probe.status.value if probe else "—"),
+            ("API", state),
+            ("Version", service.version or "—"),
+            ("Queue", service.queue_count if service.queue_count is not None else "—"),
+            ("Missing", service.missing_count if service.missing_count is not None else "—"),
+            (
+                "Indexers",
+                f"{service.indexers_total - (service.indexers_failing or 0)}/"
+                f"{service.indexers_total}"
+                if service.indexers_total is not None
+                else "—",
             ),
-            "_warnings": status.health_warnings,
-            "_error": status.error,
-        }
-    )
-
-st.dataframe(
-    pd.DataFrame(arr_rows).drop(columns=["_warnings", "_error"]),
-    hide_index=True,
-    width="stretch",
-)
-
-for row in arr_rows:
-    if row["_warnings"]:
-        with st.expander(f"{row['Service']} health warnings ({len(row['_warnings'])})"):
-            for warning in row["_warnings"]:
-                st.markdown(f"- {warning}")
-    elif row["_error"]:
-        st.caption(f":gray[{row['Service']}: {row['_error']}]")
+        )
+        for column, (label, value) in zip(columns, values):
+            with column:
+                metric_card(label, str(value))
+        for warning in service.health_warnings:
+            st.warning(warning, icon=":material/warning:")
+        if service.error:
+            st.caption(f":gray[{service.error}]")
 
 read_only_notice()

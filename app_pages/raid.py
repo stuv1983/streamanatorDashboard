@@ -153,7 +153,40 @@ else:
         config_entry = settings.disk(serial)
         is_watched = serial == CRC_WATCH_SERIAL
 
-        with st.container(border=True):
+        disk_readings = [
+            reading
+            for reading in raid.readings
+            if reading.key.startswith(f"disk.{serial}.")
+        ]
+        disk_status = max(
+            (reading.status for reading in disk_readings),
+            key=lambda status: status.rank,
+            default=Status.HEALTHY if disk.passed is True else Status.UNKNOWN,
+        )
+        if disk.passed is False:
+            disk_status = Status.CRITICAL
+        temperature = (
+            f"{disk.temperature_celsius:.0f} °C"
+            if disk.temperature_celsius is not None
+            else "temperature unknown"
+        )
+        risk_parts: list[str] = []
+        if disk.current_pending_sectors:
+            risk_parts.append(f"{disk.current_pending_sectors:,.0f} pending")
+        if disk.reallocated_sectors:
+            risk_parts.append(f"{disk.reallocated_sectors:,.0f} reallocated")
+        if disk.offline_uncorrectable:
+            risk_parts.append(f"{disk.offline_uncorrectable:,.0f} uncorrectable")
+        risk = " · ".join(risk_parts) if risk_parts else "no sector warnings"
+        model = disk.model or (config_entry.model if config_entry else "unknown model")
+        role = config_entry.role if config_entry else "unknown role"
+        watched_label = " · watched" if is_watched else ""
+
+        with st.expander(
+            f":material/{disk_status.icon}: {serial} · {model} · {role} · "
+            f"{temperature} · {risk}{watched_label}",
+            expanded=False,
+        ):
             header, badge = st.columns([3, 1], vertical_alignment="center")
             with header:
                 st.markdown(f"#### {serial}")
@@ -203,7 +236,10 @@ else:
                 if chart is not None:
                     st.altair_chart(chart, width="stretch")
                     chart_source_caption(crc_samples)
-                    with st.expander("Table view"):
+                    if st.toggle(
+                        "Show table view",
+                        key=f"raid_crc_table_{serial}",
+                    ):
                         st.dataframe(
                             to_table(crc_samples, "CRC errors"),
                             hide_index=True,
