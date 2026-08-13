@@ -190,6 +190,15 @@ with st.expander(
             f"{len(listeners) - len(exposed_listeners)} loopback-only. Process "
             "names appear only for sockets owned by the unprivileged dashboard user."
         )
+        if any(entry.port == 8000 for entry in exposed_listeners):
+            st.info(
+                "Port **8000** is Gluetun's HTTP control API. It is used for VPN "
+                "health and status checks by the monitoring stack, so it is an "
+                "expected internal listener. Expected does not mean publicly "
+                "exposed: keep Gluetun API authentication enabled and restrict "
+                "network access to the services that need it.",
+                icon=":material/vpn_lock:",
+            )
         if unexpected:
             st.warning(
                 "Unexpected listeners: "

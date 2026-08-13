@@ -13,6 +13,7 @@ from core import collector
 from core.collector import Snapshot
 from core.status import ComponentHealth, Status
 from health.scoring import HealthScore
+from services.system import Listener
 from services import unifi
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -50,7 +51,18 @@ def _snapshot() -> Snapshot:
                 "unifi_devices_error": "",
                 "interface_rates": {},
             },
-            "security": {"unifi": available, "listeners": []},
+            "security": {
+                "unifi": available,
+                "listeners": [
+                    Listener(
+                        protocol="tcp",
+                        address="0.0.0.0",
+                        port=8000,
+                        process="gluetun",
+                    )
+                ],
+                "unexpected_listeners": [],
+            },
         },
     )
 
@@ -124,3 +136,16 @@ def test_security_exposes_acl_and_policy_resource_groups(configured_pages):
     labels = {expander.label for expander in app.expander}
     assert any("Access control rules" in label for label in labels)
     assert any("DNS and traffic policies" in label for label in labels)
+
+
+def test_security_identifies_gluetun_control_api_as_expected(configured_pages):
+    app = AppTest.from_file(
+        str(PACKAGE_ROOT / "app_pages" / "security.py"), default_timeout=120
+    ).run()
+
+    assert not app.exception
+    assert config.EXPECTED_LISTENERS[8000] == "Gluetun HTTP control API"
+    assert any("0 unexpected" in expander.label for expander in app.expander)
+    assert any(
+        "Gluetun's HTTP control API" in message.value for message in app.info
+    )

@@ -701,6 +701,7 @@ EXPECTED_LISTENERS: dict[int, str] = {
     445: "Samba (SMB)",
     2283: "Immich",
     6881: "qBittorrent BitTorrent (via gluetun)",
+    8000: "Gluetun HTTP control API",
     6969: "Sports Data Lab (Streamlit)",
     8080: "SABnzbd (via gluetun)",
     8081: "Sonarr (via gluetun)",
