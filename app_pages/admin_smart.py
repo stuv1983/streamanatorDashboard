@@ -18,8 +18,8 @@ from admin import actions as registry
 from components.admin_ui import confirm_and_run, require_admin, session_bar
 from components.layout import page_header
 from config import CRC_WATCH_SERIAL, get_settings
-from core.runtime import audit_log
-from services import smart
+from core.runtime import audit_log, prometheus_client
+from services import prometheus as prometheus_service, smart
 from utils.cache import clear_all
 
 current = require_admin("Disk health setup")
@@ -36,24 +36,63 @@ st.divider()
 
 st.markdown("### Current access")
 
-prometheus_configured = settings.prometheus.configured
+prometheus = prometheus_client()
+prometheus_available = False
+exporter_detected = False
+exporter_error = ""
+exporter_disks: dict[str, smart.SmartDisk] = {}
 local_error: str | None = None
-disks: dict[str, smart.SmartDisk] = {}
+local_disks: dict[str, smart.SmartDisk] = {}
 
-try:
-    disks = smart.collect_smart_local(
-        settings.local.smartctl_path, settings.local.smartctl_via_sudo
-    )
-except smart.SmartUnavailable as exc:
-    local_error = str(exc)
-except Exception as exc:  # noqa: BLE001 - a setup page must never crash
-    local_error = f"{type(exc).__name__}: {exc}"
+if prometheus is None:
+    exporter_error = "PROMETHEUS_URL is not configured."
+else:
+    try:
+        # This is a setup/diagnostic page: bypass the client's brief cached
+        # availability result so Re-check reports what is true now.
+        prometheus_available = prometheus.available(recheck_after=0)
+        if not prometheus_available:
+            exporter_error = f"Prometheus at {prometheus.url} is not answering."
+        else:
+            exporter_detected = prometheus_service.detect_features(prometheus).get(
+                "smartctl_exporter", False
+            )
+            if exporter_detected:
+                exporter_disks = smart.collect_smart_from_prometheus(prometheus)
+                if not exporter_disks:
+                    exporter_error = (
+                        "smartctl_exporter metrics exist, but no device records "
+                        "were returned yet."
+                    )
+            else:
+                exporter_error = (
+                    "Prometheus is connected, but smartctl_exporter metrics are "
+                    "not present. Check its scrape target."
+                )
+    except Exception as exc:  # noqa: BLE001 - setup status must never crash
+        exporter_error = f"{type(exc).__name__}: {exc}"
+
+# Match the collector's source preference. A verified exporter means there is
+# no reason to make seven doomed local smartctl calls or show their permission
+# errors; local smartctl is only the fallback route.
+if not exporter_disks:
+    try:
+        local_disks = smart.collect_smart_local(
+            settings.local.smartctl_path, settings.local.smartctl_via_sudo
+        )
+    except smart.SmartUnavailable as exc:
+        local_error = str(exc)
+    except Exception as exc:  # noqa: BLE001 - a setup page must never crash
+        local_error = f"{type(exc).__name__}: {exc}"
+
+disks = exporter_disks or local_disks
+smart_source = "Prometheus / smartctl_exporter" if exporter_disks else "local smartctl"
 
 left, right = st.columns(2)
 with left:
     if disks:
         st.success(
-            f"SMART is readable — {len(disks)} disk(s) reporting.",
+            f"SMART is readable from {smart_source} — {len(disks)} disk(s) reporting.",
             icon=":material/check_circle:",
         )
     else:
@@ -65,13 +104,25 @@ with left:
         if local_error:
             st.caption(f":gray[{local_error}]")
 with right:
+    if exporter_disks:
+        exporter_state = f"active · {len(exporter_disks)} disk(s)"
+    elif prometheus is None:
+        exporter_state = "not configured"
+    elif not prometheus_available:
+        exporter_state = "Prometheus unreachable"
+    elif not exporter_detected:
+        exporter_state = "metrics missing"
+    else:
+        exporter_state = "waiting for device data"
     st.metric(
         "smartctl_exporter",
-        "configured" if prometheus_configured else "not deployed",
+        exporter_state,
         border=True,
-        help="Prometheus is the preferred source: it gives history, not just "
-        "an instantaneous reading.",
+        help="This reports verified exporter data, not merely whether "
+        "PROMETHEUS_URL has been entered.",
     )
+    if exporter_error:
+        st.caption(f":gray[{exporter_error}]")
 
 if st.button("Re-check now", icon=":material/refresh:"):
     clear_all()
@@ -104,15 +155,27 @@ say UNKNOWN.
 )
 
 exporter = registry.find("smart.deploy_exporter")
-if exporter is not None:
+if exporter_disks:
+    st.success(
+        f"Verified end to end: Prometheus is receiving SMART data for "
+        f"{len(exporter_disks)} disk(s). No dashboard sudo access is required.",
+        icon=":material/check_circle:",
+    )
+elif exporter is not None:
     with st.container(border=True):
         confirm_and_run(exporter, current)
 
-st.caption(
-    "After it starts, set `PROMETHEUS_URL=http://127.0.0.1:9090` in the "
-    "credentials page — the exporter feeds Prometheus, and the dashboard "
-    "reads Prometheus. The exporter alone is not enough."
-)
+if exporter_disks:
+    st.caption(
+        "The exporter route is active. The dashboard reads these metrics from "
+        "Prometheus and can retain CRC history."
+    )
+else:
+    st.caption(
+        "After it starts, set `PROMETHEUS_URL=http://127.0.0.1:9090` in the "
+        "dashboard configuration — the exporter feeds Prometheus, and the "
+        "dashboard reads Prometheus. The exporter alone is not enough."
+    )
 
 st.divider()
 
@@ -121,6 +184,14 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 st.markdown("### Route 2 — grant the dashboard read-only smartctl via sudo")
+
+if exporter_disks:
+    st.info(
+        "Route 1 is active, so `SMARTCTL_SUDO=true` is not needed. Keeping the "
+        "dashboard on the exporter route preserves the smaller privilege "
+        "boundary.",
+        icon=":material/security:",
+    )
 
 st.markdown(
     """

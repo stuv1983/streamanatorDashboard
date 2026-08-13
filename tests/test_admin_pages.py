@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,71 @@ def test_admin_page_renders_when_signed_in(page: str):
     app = _run(page, session=_admin_session())
     _assert_clean(app, page)
     assert app.markdown or app.dataframe or app.metric
+
+
+def test_smart_setup_reports_verified_exporter_as_active(monkeypatch):
+    """The setup page must test the data path, not just local smartctl.
+
+    A working exporter used to sit beside a red "SMART is not readable" card
+    because that card unconditionally tried the local sudo route.
+    """
+    import config
+    from core import runtime
+    from services import prometheus as prometheus_service, smart
+
+    configured = config.Settings()
+    configured = replace(
+        configured,
+        prometheus=replace(
+            configured.prometheus, url="http://127.0.0.1:9090"
+        ),
+    )
+
+    class AvailablePrometheus:
+        url = "http://127.0.0.1:9090"
+
+        def available(self, recheck_after=30.0):
+            return True
+
+    disk = smart.SmartDisk(
+        serial=config.CRC_WATCH_SERIAL,
+        model="ST8000VN002-2ZM188",
+        device="sde",
+        passed=True,
+        temperature_celsius=36.0,
+        udma_crc_errors=5670.0,
+        source="prometheus:smartctl_exporter",
+    )
+    local_calls: list[bool] = []
+
+    monkeypatch.setattr(config, "get_settings", lambda: configured)
+    monkeypatch.setattr(runtime, "prometheus_client", AvailablePrometheus)
+    monkeypatch.setattr(
+        prometheus_service,
+        "detect_features",
+        lambda client: {"smartctl_exporter": True},
+    )
+    monkeypatch.setattr(
+        smart,
+        "collect_smart_from_prometheus",
+        lambda client: {disk.serial: disk},
+    )
+    monkeypatch.setattr(
+        smart,
+        "collect_smart_local",
+        lambda *args: local_calls.append(True) or {},
+    )
+
+    app = _run("admin_smart.py", session=_admin_session())
+    _assert_clean(app, "admin_smart.py")
+
+    assert local_calls == []
+    assert any(
+        "SMART is readable from Prometheus / smartctl_exporter" in block.value
+        for block in app.success
+    )
+    assert any("No dashboard sudo access is required" in block.value for block in app.success)
+    assert any("SMARTCTL_SUDO=true` is not needed" in block.value for block in app.info)
 
 
 def test_expired_session_is_refused():
