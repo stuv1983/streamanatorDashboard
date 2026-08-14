@@ -62,7 +62,19 @@ Cmnd_Alias STREAMANATOR_POWER = \
     /usr/sbin/shutdown -r +1, \
     /usr/sbin/shutdown -c
 
-arm ALL=(root) NOPASSWD: STREAMANATOR_SERVICES, STREAMANATOR_POWER
+# Package upgrades. NOT a grant on apt-get: this starts one named unit, whose
+# file is root-owned in /etc/systemd/system and therefore not rewritable by
+# `arm`. Granting `apt-get upgrade` directly would be a NOPASSWD grant on a
+# command that runs maintainer scripts as root — the broadest entry in this
+# file by a wide margin, and unnecessary.
+#
+# Requires deploy/streamanator-apt-upgrade.service to be installed first;
+# without it this grant permits starting a unit that does not exist.
+Cmnd_Alias STREAMANATOR_UPDATES = \
+    /usr/bin/systemctl start --no-block streamanator-apt-upgrade.service
+
+arm ALL=(root) NOPASSWD: STREAMANATOR_SERVICES, STREAMANATOR_POWER, \
+                         STREAMANATOR_UPDATES
 
 # Belt and braces. If the aliases above are ever loosened by an edit, these
 # denials still block the forms that would turn a service restart into

@@ -1,0 +1,94 @@
+# Runs `apt-get update` then `apt-get upgrade` on demand, started by the
+# dashboard's admin console.
+#
+# Install with:
+#   sudo install -m 0644 -o root -g root \
+#       deploy/streamanator-apt-upgrade.service \
+#       /etc/systemd/system/streamanator-apt-upgrade.service
+#   sudo systemctl daemon-reload
+#
+# Then install deploy/sudoers-streamanator-admin, which grants the dashboard
+# account permission to start exactly this unit and nothing else.
+#
+# ---------------------------------------------------------------------------
+# WHY A UNIT INSTEAD OF A SUDO GRANT ON apt-get
+# ---------------------------------------------------------------------------
+#
+#   * A NOPASSWD grant on `apt-get upgrade` runs package maintainer scripts as
+#     root and is the broadest thing the action registry could hand out. The
+#     grant that exists instead is for one named unit. This file lives in
+#     /etc/systemd/system, root-owned — the dashboard account cannot rewrite
+#     what it starts, which is the same rule that keeps every other sudo entry
+#     off a path under /home.
+#
+#   * An upgrade routinely runs longer than any timeout it would be sane to
+#     hold a web request open for, and the dashboard reports a timed-out
+#     command as "outcome UNKNOWN". For a package upgrade that is the worst
+#     possible answer. Started with `--no-block`, this unit outlives the click,
+#     the browser tab, and a restart of the dashboard itself.
+#
+#   * journald keeps the output, so there is a record of what changed that does
+#     not depend on anyone having a tab open at the time.
+#
+# ---------------------------------------------------------------------------
+# WHY THESE FLAGS
+# ---------------------------------------------------------------------------
+#
+#   DEBIAN_FRONTEND=noninteractive
+#       Without it, a package shipping a changed config file opens a dpkg
+#       conffile prompt and waits forever. There is no terminal here, so the
+#       unit would sit at 100% of its timeout and then be killed mid-dpkg.
+#
+#   --force-confold / --force-confdef
+#       Keeps your existing config files when a package ships a new default.
+#       The alternative is silently overwriting a hand-edited config; you can
+#       review the .dpkg-dist files afterwards at your own pace.
+#
+#   NEEDRESTART_MODE=l
+#       List services needing a restart, do not restart them. `a` would
+#       auto-restart whatever needed it, and deciding that Plex or the VPN
+#       stack restarts is not something an upgrade should do behind your back.
+#       The dashboard surfaces the reboot-required flag instead.
+#
+#   DPkg::Lock::Timeout=600
+#       Ubuntu's own apt-daily.timer may hold the dpkg lock. Waiting ten
+#       minutes for it beats failing with "Could not get lock" and looking like
+#       a broken button.
+#
+#   `upgrade`, not `full-upgrade`/`dist-upgrade`
+#       Upgrades installed packages in place. Never removes a package to
+#       satisfy an upgrade — a package removal on a media server, unattended,
+#       is not a trade worth making. Held-back packages stay held back and
+#       remain visible in the dashboard's pending count.
+
+[Unit]
+Description=Streamanator dashboard: apt update and upgrade
+Documentation=file:///etc/systemd/system/streamanator-apt-upgrade.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=DEBIAN_FRONTEND=noninteractive
+Environment=NEEDRESTART_MODE=l
+Environment=APT_LISTCHANGES_FRONTEND=none
+
+ExecStart=/usr/bin/apt-get -o DPkg::Lock::Timeout=600 -q update
+ExecStart=/usr/bin/apt-get -y -q \
+    -o DPkg::Lock::Timeout=600 \
+    -o Dpkg::Options::=--force-confold \
+    -o Dpkg::Options::=--force-confdef \
+    upgrade
+
+# Long enough for a large upgrade on a domestic connection; short enough that
+# a genuinely wedged dpkg does not stay wedged forever.
+TimeoutStartSec=3600
+
+# apt needs to write across the filesystem, so most sandboxing options do not
+# apply here. This one does, and costs nothing.
+PrivateTmp=yes
+
+# Deliberately no [Install] section. This unit is started on demand and must
+# never be enabled: a WantedBy= would make every boot run an unattended
+# upgrade, which is a different feature with a different risk profile and is
+# what unattended-upgrades already exists to do.

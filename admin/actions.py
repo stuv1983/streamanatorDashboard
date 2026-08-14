@@ -35,9 +35,29 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from config import EXPECTED_CONTAINERS, PROJECT_ROOT
+from config import EXPECTED_CONTAINERS, PROJECT_ROOT, get_settings
 
 COMPOSE_DIR = PROJECT_ROOT / "deploy" / "monitoring-stack"
+
+#: The oneshot unit that runs `apt-get update && apt-get upgrade`. Fixed in
+#: source, never read from configuration: `.env` is writable by the dashboard
+#: account, so a unit name that came from there would turn "can edit .env" into
+#: "can start any unit as root" the moment the sudoers rule is installed.
+#:
+#: Why a unit at all, rather than granting sudo on apt-get directly:
+#:
+#: * A NOPASSWD grant on `apt-get upgrade` runs maintainer scripts as root, and
+#:   is the broadest thing this registry could possibly hand out. The grant
+#:   below is for one named unit whose ExecStart lives in /usr and whose unit
+#:   file lives in /etc — neither writable by the dashboard account.
+#: * An upgrade routinely outruns any timeout it would be sane to hold a web
+#:   request open for, and `execute()` reports a timeout as "outcome UNKNOWN".
+#:   For a package upgrade that is the worst possible answer. Started with
+#:   `--no-block`, the unit outlives the dashboard, survives a restart of it,
+#:   and reports progress through systemd rather than through a held pipe.
+#: * dpkg conffile prompts hang forever without DEBIAN_FRONTEND=noninteractive,
+#:   which the runner's minimal environment would strip. The unit file sets it.
+APT_UPGRADE_UNIT = "streamanator-apt-upgrade.service"
 
 
 class Risk(str, Enum):
@@ -461,6 +481,62 @@ ACTIONS: tuple[Action, ...] = (
         cwd=str(COMPOSE_DIR),
         tags=("monitoring",),
     ),
+    # -- Updates -----------------------------------------------------------
+    Action(
+        key="server.apt_upgrade",
+        label="Install Ubuntu updates",
+        group="Updates",
+        summary=f"systemctl start --no-block {APT_UPGRADE_UNIT}",
+        explain=(
+            "Starts a systemd unit that runs `apt-get update` followed by "
+            "`apt-get upgrade`. Packages are upgraded in place; nothing is "
+            "removed and nothing new is installed, so a held-back package "
+            "stays held back rather than dragging in a transition. Services "
+            "whose packages change are restarted by their own maintainer "
+            "scripts — Plex among them, which stops playback. A kernel update "
+            "will not take effect until you reboot, and the page will say so.\n\n"
+            "The unit is started, not waited for: it keeps running if you "
+            "close this tab or restart the dashboard. Watch its progress "
+            "below, or with `journalctl -fu " + APT_UPGRADE_UNIT + "`."
+        ),
+        argv=(_SYSTEMCTL, "start", "--no-block", APT_UPGRADE_UNIT),
+        binary_candidates=_SYSTEMCTL_ALTS,
+        risk=Risk.DISRUPTIVE,
+        needs_sudo=True,
+        needs_step_up=True,
+        timeout=30.0,
+        rationale=(
+            "One named unit rather than a sudo grant on apt-get. The unit file "
+            "is root-owned in /etc/systemd/system, so the dashboard account "
+            "cannot rewrite what it starts."
+        ),
+        tags=("updates", "apt", "systemd"),
+    ),
+    Action(
+        key="docker.prune_images",
+        label="Remove unused container images",
+        group="Updates",
+        summary="docker image prune -f",
+        explain=(
+            "Deletes images no container references and no tag points at — the "
+            "layers left behind after an image update. This is how the disk "
+            "gets its space back after a stack update.\n\n"
+            "It also deletes the version you just upgraded away from, so "
+            "rolling back afterwards means pulling that tag again from the "
+            "registry. Run it once the new images have proved themselves, not "
+            "immediately after updating."
+        ),
+        argv=(_DOCKER, "image", "prune", "-f"),
+        binary_candidates=_DOCKER_ALTS,
+        risk=Risk.DISRUPTIVE,
+        needs_step_up=True,
+        timeout=180.0,
+        rationale=(
+            "Dangling images only — no `-a`, which would also remove images "
+            "that are tagged but not currently running."
+        ),
+        tags=("updates", "docker"),
+    ),
     Action(
         key="probes.restart_blackbox",
         label="Restart the probe exporter",
@@ -487,15 +563,74 @@ ACTIONS: tuple[Action, ...] = (
 )
 
 
+def stack_actions() -> list[Action]:
+    """One "pull and recreate" action per *configured* Compose stack.
+
+    Built per call rather than frozen into `ACTIONS`, because a stack
+    directory set in the admin console must take effect on the next
+    `reload_settings()` and not at the next process restart.
+
+    Unconfigured stacks yield no action at all. An action whose `cwd` is the
+    empty string would run `docker compose` in whatever directory the
+    dashboard happened to be started from, which on this host is the project
+    root — where a `deploy/monitoring-stack` sibling makes that mistake look
+    like it worked.
+
+    `--pull always` is what makes this an update rather than a restart, and it
+    keeps the whole thing a single argv: `pull && up -d` would need a shell,
+    and `shell=True` appears nowhere in this package.
+    """
+    built: list[Action] = []
+    for stack in get_settings().stacks:
+        if not stack.configured:
+            continue
+        built.append(
+            Action(
+                key=f"docker.update_stack.{stack.key}",
+                label=f"Update {stack.display}",
+                group="Updates",
+                summary="docker compose up -d --pull always",
+                explain=stack.explain,
+                argv=(_DOCKER, "compose", "up", "-d", "--pull", "always"),
+                binary_candidates=_DOCKER_ALTS,
+                risk=Risk.DISRUPTIVE,
+                needs_step_up=True,
+                # Pulling several hundred megabytes over a domestic connection
+                # is routinely slower than the 300s the monitoring stack gets.
+                timeout=900.0,
+                cwd=stack.directory,
+                rationale=(
+                    "Runs in the directory named by "
+                    f"`{stack.env_var}`, never in a path discovered from "
+                    "container labels. A compose file is an "
+                    "arbitrary-code-execution format, so where it is read from "
+                    "is a configuration decision, not a discovery one."
+                ),
+                tags=("updates", "docker", "compose"),
+            )
+        )
+    return built
+
+
+def all_actions() -> tuple[Action, ...]:
+    """The static registry plus the actions derived from current settings.
+
+    Every consumer goes through here. `ACTIONS` remains the source-declared
+    core, and `tests/test_admin_actions.py` applies its invariants to this
+    combined list so a dynamically built action cannot dodge them.
+    """
+    return ACTIONS + tuple(stack_actions())
+
+
 def find(key: str) -> Action | None:
-    return next((a for a in ACTIONS if a.key == key), None)
+    return next((a for a in all_actions() if a.key == key), None)
 
 
 def by_group() -> dict[str, list[Action]]:
     groups: dict[str, list[Action]] = {}
-    for action in ACTIONS:
+    for action in all_actions():
         groups.setdefault(action.group, []).append(action)
-    order = ["Server", "Services", "Docker", "Disk health", "Monitoring"]
+    order = ["Server", "Services", "Docker", "Updates", "Disk health", "Monitoring"]
     return {name: groups[name] for name in order if name in groups} | {
         name: items for name, items in groups.items() if name not in order
     }
@@ -508,6 +643,10 @@ def grantable_sudo_rules() -> list[str]:
     this list exactly, so the file and the code cannot drift apart — a stale
     sudoers file is either a broken button or an over-broad grant, and both
     are silent.
+
+    Reads `ACTIONS` alone, deliberately. The stack actions need no sudo, and a
+    sudoers file that varied with a host's `.env` could not be checked against
+    the source at all.
     """
     rules = {a.sudo_rule for a in ACTIONS if a.sudo_rule}
     return sorted(rules)

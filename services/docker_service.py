@@ -46,6 +46,10 @@ class ContainerInfo:
     #: e.g. everything routed through Gluetun.
     network_mode: str = ""
     image_id: str = ""
+    #: When this container object was created — i.e. when it was last recreated
+    #: by `compose up`. `started_at` moves on every restart; this does not, so
+    #: it is the honest answer to "when was this container last updated".
+    created_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -165,6 +169,7 @@ def list_containers(timeout: float = 8.0) -> list[ContainerInfo]:
                 labels=labels,
                 network_mode=host_config.get("NetworkMode", ""),
                 image_id=item.get("Image", ""),
+                created_at=_parse_docker_time(item.get("Created")),
             )
         )
     return containers
@@ -246,6 +251,73 @@ def exec_readonly(
     """
     code, out, err = run_command(["docker", "exec", container, *args], timeout)
     return code, out.strip() or err.strip()
+
+
+@dataclass(frozen=True)
+class ImageInfo:
+    """The parts of a local image that answer "how old, and which digest"."""
+
+    image_id: str
+    #: When the publisher built it, not when it was pulled — Docker does not
+    #: record the pull time anywhere, which is why the container's own
+    #: `created_at` is reported alongside this one.
+    created: float | None
+    #: `repo@sha256:…` entries. Empty for images built locally or `docker load`ed,
+    #: in which case there is no registry digest to compare against.
+    repo_digests: tuple[str, ...] = ()
+    repo_tags: tuple[str, ...] = ()
+
+
+def image_details(image_ids: Iterable[str], timeout: float = 10.0) -> dict[str, ImageInfo]:
+    """Inspect several images in one call, keyed by image ID.
+
+    Batched for the same reason `list_containers` batches: a page showing
+    eleven containers should cost one subprocess, not eleven. Missing images
+    are simply absent from the result — `docker image inspect` exits non-zero
+    when *any* argument is unknown, so failures are per-image, not fatal.
+    """
+    ids = sorted({i for i in image_ids if i})
+    if not ids:
+        return {}
+    code, out, err = run_command(["docker", "image", "inspect", *ids], timeout)
+    if not out.strip():
+        log.debug("docker image inspect returned nothing (rc=%s): %s", code, err[:200])
+        return {}
+    try:
+        payload = json.loads(out)
+    except json.JSONDecodeError:
+        return {}
+
+    details: dict[str, ImageInfo] = {}
+    for item in payload:
+        image_id = item.get("Id", "")
+        if not image_id:
+            continue
+        details[image_id] = ImageInfo(
+            image_id=image_id,
+            created=_parse_docker_time(item.get("Created")),
+            repo_digests=tuple(item.get("RepoDigests") or ()),
+            repo_tags=tuple(item.get("RepoTags") or ()),
+        )
+    return details
+
+
+def compose_project_dirs(containers: Iterable[ContainerInfo]) -> dict[str, str]:
+    """Compose project name -> the directory it was brought up from.
+
+    Read from the labels Compose writes onto every container it creates. This
+    is discovery, not configuration: it tells the admin page what to *suggest*
+    when a stack directory has not been set, and is never used as a working
+    directory directly. `admin/actions.py` only ever runs in a path that came
+    from `config.COMPOSE_STACKS`.
+    """
+    found: dict[str, str] = {}
+    for container in containers:
+        project = container.labels.get("com.docker.compose.project", "")
+        working_dir = container.labels.get("com.docker.compose.project.working_dir", "")
+        if project and working_dir:
+            found.setdefault(project, working_dir)
+    return found
 
 
 def docker_version(timeout: float = 5.0) -> dict[str, str]:

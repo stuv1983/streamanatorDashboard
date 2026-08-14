@@ -407,6 +407,91 @@ EXPECTED_CONTAINERS: tuple[ExpectedContainer, ...] = (
     ExpectedContainer("immich-redis", "Immich Redis", "immich"),
 )
 
+# --------------------------------------------------------------------------
+# Compose stacks
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ComposeStack:
+    """A Compose project the dashboard is allowed to pull and recreate.
+
+    `directory` is the only thing that varies, and it comes from an environment
+    variable rather than from Docker. The dashboard *can* discover a project's
+    working directory from the labels Compose writes (see
+    `services.docker_service.compose_project_dirs`), and the admin page offers
+    that as a suggestion — but a discovered path is never used as a working
+    directory. Otherwise a container relabelled by anything with access to the
+    daemon would choose where `docker compose up` runs, and a compose file is
+    an arbitrary-code-execution format.
+    """
+
+    key: str
+    display: str
+    env_var: str
+    directory: str
+    explain: str
+    critical: bool = False
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.directory)
+
+
+#: The media-vpn and immich stacks live outside this repository, so their
+#: directories have no sensible default and start empty: an unconfigured stack
+#: renders as "not configured" with the discovered path offered, never as a
+#: guess that runs compose somewhere unexpected.
+COMPOSE_STACKS: tuple[ComposeStack, ...] = (
+    ComposeStack(
+        key="media-vpn",
+        display="Media stack (behind Gluetun)",
+        env_var="MEDIA_STACK_DIR",
+        directory=env_str("MEDIA_STACK_DIR", ""),
+        explain=(
+            "Pulls new images for Gluetun, SABnzbd, Sonarr, Radarr, Prowlarr "
+            "and qBittorrent, then recreates whichever of them changed. "
+            "Recreating Gluetun drops the network namespace every other "
+            "container in this stack shares, so all of them lose connectivity "
+            "until the tunnel is back up. In-progress downloads are "
+            "interrupted; SABnzbd and qBittorrent resume from their queues."
+        ),
+        critical=True,
+    ),
+    ComposeStack(
+        key="immich",
+        display="Immich",
+        env_var="IMMICH_STACK_DIR",
+        directory=env_str("IMMICH_STACK_DIR", ""),
+        explain=(
+            "Pulls new Immich images and recreates the changed containers, "
+            "including the database. Immich is unavailable while it restarts, "
+            "and a major-version jump can run a one-way database migration — "
+            "read Immich's release notes before taking a version bump."
+        ),
+        critical=True,
+    ),
+    ComposeStack(
+        key="monitoring",
+        display="Monitoring stack",
+        env_var="MONITORING_STACK_DIR",
+        directory=env_str(
+            "MONITORING_STACK_DIR", str(PROJECT_ROOT / "deploy" / "monitoring-stack")
+        ),
+        explain=(
+            "Pulls new Prometheus, Grafana, node-exporter, cAdvisor, "
+            "smartctl-exporter and blackbox-exporter images and recreates the "
+            "changed ones. Named volumes survive, so Prometheus history and "
+            "Grafana dashboards are kept. Metrics gap for a few seconds."
+        ),
+    ),
+)
+
+
+def compose_stack(key: str) -> "ComposeStack | None":
+    return next((s for s in COMPOSE_STACKS if s.key == key), None)
+
+
 #: Gluetun publishes the media stack's ports on the host, so every one of these
 #: host ports actually belongs to the gluetun container.
 GLUETUN_PUBLISHED_PORTS: dict[int, str] = {
@@ -860,6 +945,27 @@ class AuthConfig:
 
 
 @dataclass(frozen=True)
+class UpdatesConfig:
+    """Update reporting. Deliberately has no say over *what* gets run.
+
+    There is no setting here for the apt unit name or the upgrade command.
+    Both are fixed in source: `.env` is writable by the dashboard account, so
+    an environment variable that fed into a sudo-granted argv would be a path
+    from "can edit .env" to "can start any unit as root".
+    """
+
+    #: Query each image's registry for the digest its tag now points at.
+    #: Turn off on a metered or firewalled connection — every container then
+    #: reports UNKNOWN rather than pretending to be current.
+    check_registry: bool = field(
+        default_factory=lambda: env_bool("UPDATES_CHECK_REGISTRY", True)
+    )
+    registry_timeout_seconds: float = field(
+        default_factory=lambda: env_float("UPDATES_REGISTRY_TIMEOUT", 8.0)
+    )
+
+
+@dataclass(frozen=True)
 class Settings:
     """Aggregate settings object. Build once via `get_settings()`."""
 
@@ -875,11 +981,13 @@ class Settings:
     raid: RaidConfig = field(default_factory=RaidConfig)
     vpn: VpnConfig = field(default_factory=VpnConfig)
     api: AppApiConfig = field(default_factory=AppApiConfig)
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
     vlans: tuple[Vlan, ...] = VLANS
     disks: tuple[DiskConfig, ...] = DISKS
     filesystems: tuple[Filesystem, ...] = FILESYSTEMS
     containers: tuple[ExpectedContainer, ...] = EXPECTED_CONTAINERS
+    stacks: tuple[ComposeStack, ...] = COMPOSE_STACKS
     #: Rebuilt per instantiation so a URL changed in the admin console applies
     #: on `reload_settings()` rather than at the next process restart.
     endpoints: tuple[ServiceEndpoint, ...] = field(
@@ -894,6 +1002,9 @@ class Settings:
 
     def disk(self, serial: str) -> DiskConfig | None:
         return next((d for d in self.disks if d.serial == serial), None)
+
+    def stack(self, key: str) -> ComposeStack | None:
+        return next((s for s in self.stacks if s.key == key), None)
 
 
 _SETTINGS: Settings | None = None

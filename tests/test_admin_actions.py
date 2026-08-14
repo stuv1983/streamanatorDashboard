@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from admin import actions as registry
-from admin.actions import ACTIONS, Risk
+from admin.actions import APT_UPGRADE_UNIT, Risk
 from admin.env_file import read_env_file, update_env_file
 from config import PROJECT_ROOT
 
@@ -28,14 +28,14 @@ SUDOERS_FILE = PROJECT_ROOT / "deploy" / "sudoers-streamanator-admin"
 
 
 def test_every_action_key_is_unique():
-    keys = [a.key for a in ACTIONS]
+    keys = [a.key for a in registry.all_actions()]
     assert len(keys) == len(set(keys))
 
 
 def test_no_action_uses_a_shell_metacharacter():
     """argv goes straight to execve. A pipe here would be a literal argument,
     which means someone wrote it expecting a shell that does not exist."""
-    for action in ACTIONS:
+    for action in registry.all_actions():
         for argument in action.argv:
             assert not re.search(r"[;&|><`$]", argument), (
                 f"{action.key} has a shell metacharacter in {argument!r}"
@@ -43,14 +43,14 @@ def test_no_action_uses_a_shell_metacharacter():
 
 
 def test_no_action_argv_is_empty():
-    for action in ACTIONS:
+    for action in registry.all_actions():
         assert action.argv and action.argv[0]
 
 
 def test_every_binary_is_an_absolute_path():
     """A bare name would resolve through PATH, which is attacker-influenceable
     in ways an absolute path is not."""
-    for action in ACTIONS:
+    for action in registry.all_actions():
         assert action.argv[0].startswith("/"), f"{action.key} uses a relative binary"
 
 
@@ -58,7 +58,7 @@ def test_no_sudo_action_points_at_a_user_writable_path():
     """A NOPASSWD grant on a file the service account can write is a root shell
     with extra steps: rewrite the file, then run it."""
     writable_roots = ("/home/", "/tmp/", "/var/tmp/", str(PROJECT_ROOT))
-    for action in ACTIONS:
+    for action in registry.all_actions():
         if not action.needs_sudo or action.never_grant:
             continue
         for argument in action.argv:
@@ -69,7 +69,7 @@ def test_no_sudo_action_points_at_a_user_writable_path():
 
 def test_actions_reading_from_the_project_directory_are_never_granted():
     """The inverse check: anything referencing the project tree must be SSH-only."""
-    for action in ACTIONS:
+    for action in registry.all_actions():
         touches_project = any(str(PROJECT_ROOT) in a for a in action.argv)
         if touches_project and action.needs_sudo:
             assert action.never_grant, (
@@ -79,14 +79,14 @@ def test_actions_reading_from_the_project_directory_are_never_granted():
 
 
 def test_destructive_actions_require_step_up_and_a_typed_phrase():
-    for action in ACTIONS:
+    for action in registry.all_actions():
         if action.risk is Risk.DESTRUCTIVE:
             assert action.needs_step_up, f"{action.key} is destructive without step-up"
             assert action.confirm_phrase, f"{action.key} has no confirmation phrase"
 
 
 def test_destructive_actions_declare_an_undo():
-    for action in ACTIONS:
+    for action in registry.all_actions():
         if action.risk is Risk.DESTRUCTIVE:
             assert action.undo_key, f"{action.key} has no undo path"
             assert registry.find(action.undo_key) is not None
@@ -94,7 +94,7 @@ def test_destructive_actions_declare_an_undo():
 
 def test_every_action_explains_itself():
     """A button whose consequences are not stated is a trap."""
-    for action in ACTIONS:
+    for action in registry.all_actions():
         assert len(action.explain) > 40, f"{action.key} needs a real explanation"
 
 
@@ -109,6 +109,169 @@ def test_reboot_is_delayed_not_immediate():
     assert reboot is not None
     assert any(a.startswith("+") for a in reboot.argv), "reboot is not delayed"
     assert registry.find("server.cancel_shutdown") is not None
+
+
+# ---------------------------------------------------------------------------
+# Updates: apt runs as a unit, never as a sudo grant on the package manager
+# ---------------------------------------------------------------------------
+
+APT_UNIT_FILE = PROJECT_ROOT / "deploy" / "streamanator-apt-upgrade.service"
+
+
+def test_no_action_is_granted_sudo_on_the_package_manager():
+    """`apt-get upgrade` under NOPASSWD runs maintainer scripts as root. The
+    upgrade goes through a named unit precisely so that grant never exists."""
+    for rule in registry.grantable_sudo_rules():
+        assert "apt" not in rule.split()[0], f"sudo grant on a package manager: {rule}"
+
+
+def test_apt_upgrade_starts_the_unit_without_blocking():
+    """Blocking would put a multi-minute upgrade inside a web request, where a
+    timeout is reported as 'outcome UNKNOWN' — the worst answer for dpkg."""
+    action = registry.find("server.apt_upgrade")
+    assert action is not None
+    assert action.argv[0].endswith("systemctl")
+    assert "--no-block" in action.argv
+    assert APT_UPGRADE_UNIT in action.argv
+
+
+def test_apt_upgrade_unit_file_is_shipped():
+    assert APT_UNIT_FILE.is_file()
+    assert APT_UNIT_FILE.name == APT_UPGRADE_UNIT
+
+
+def test_apt_upgrade_unit_upgrades_without_removing_packages():
+    """`full-upgrade`/`dist-upgrade` may remove packages to resolve an upgrade.
+    Unattended package removal on a media server is not a trade worth making."""
+    # Directives only — the comment block above them names the rejected forms
+    # in order to explain why they are rejected.
+    text = APT_UNIT_FILE.read_text(encoding="utf-8")
+    commands = " ".join(
+        line for line in text.replace("\\\n", " ").splitlines()
+        if line.startswith("ExecStart=")
+    )
+    assert "apt-get" in commands and "upgrade" in commands, "the unit runs nothing"
+    assert "full-upgrade" not in commands and "dist-upgrade" not in commands
+    assert "install" not in commands and "remove" not in commands
+
+
+def test_apt_upgrade_unit_is_noninteractive():
+    """Without this, one changed conffile parks dpkg on a prompt until the
+    unit's timeout kills it mid-transaction."""
+    text = APT_UNIT_FILE.read_text(encoding="utf-8")
+    assert "DEBIAN_FRONTEND=noninteractive" in text
+    assert "--force-confold" in text
+
+
+def test_apt_upgrade_unit_is_never_enabled_at_boot():
+    """An [Install] section would turn an on-demand action into an unattended
+    upgrade on every boot — a different feature with a different risk."""
+    for line in APT_UNIT_FILE.read_text(encoding="utf-8").splitlines():
+        assert line.strip() != "[Install]"
+
+
+def test_apt_unit_file_is_not_under_the_project_directory_when_granted():
+    """The grant is on a unit whose file lives in /etc, root-owned. If it were
+    started from a path `arm` can write, the grant would be a root shell."""
+    rules = [r for r in registry.grantable_sudo_rules() if APT_UPGRADE_UNIT in r]
+    assert rules, "the apt unit is not in the sudoers rules"
+    for rule in rules:
+        assert str(PROJECT_ROOT) not in rule and "/home/" not in rule
+
+
+# ---------------------------------------------------------------------------
+# Compose stack updates
+# ---------------------------------------------------------------------------
+
+
+def _stacks(monkeypatch, stacks):
+    from config import Settings
+
+    monkeypatch.setattr(
+        registry, "get_settings", lambda: Settings(stacks=tuple(stacks))
+    )
+
+
+def test_unconfigured_stack_produces_no_action(monkeypatch):
+    """An action with an empty cwd would run `docker compose` in whatever
+    directory the dashboard was launched from."""
+    from config import ComposeStack
+
+    _stacks(
+        monkeypatch,
+        [ComposeStack("media-vpn", "Media", "MEDIA_STACK_DIR", "", "explanation")],
+    )
+    assert registry.stack_actions() == []
+
+
+def test_configured_stack_runs_in_that_directory(monkeypatch, tmp_path):
+    from config import ComposeStack
+
+    _stacks(
+        monkeypatch,
+        [
+            ComposeStack(
+                "media-vpn",
+                "Media",
+                "MEDIA_STACK_DIR",
+                str(tmp_path),
+                "A long explanation of exactly what this will interrupt.",
+            )
+        ],
+    )
+    built = registry.stack_actions()
+    assert len(built) == 1
+    assert built[0].cwd == str(tmp_path)
+    assert built[0].key == "docker.update_stack.media-vpn"
+
+
+def test_stack_updates_are_a_single_argv_with_no_shell_chaining(monkeypatch, tmp_path):
+    """`pull && up -d` would need a shell. `--pull always` does the same work
+    in one execve."""
+    from config import ComposeStack
+
+    _stacks(
+        monkeypatch,
+        [
+            ComposeStack(
+                "monitoring",
+                "Monitoring",
+                "MONITORING_STACK_DIR",
+                str(tmp_path),
+                "A long explanation of exactly what this will interrupt.",
+            )
+        ],
+    )
+    argv = registry.stack_actions()[0].argv
+    assert "--pull" in argv and "always" in argv
+    assert "&&" not in " ".join(argv)
+
+
+def test_stack_updates_never_need_sudo(monkeypatch, tmp_path):
+    """The dashboard account is already in the docker group; a sudo grant on
+    `docker` would be a grant on everything, since docker can mount the host."""
+    from config import ComposeStack
+
+    _stacks(
+        monkeypatch,
+        [
+            ComposeStack(
+                "immich",
+                "Immich",
+                "IMMICH_STACK_DIR",
+                str(tmp_path),
+                "A long explanation of exactly what this will interrupt.",
+            )
+        ],
+    )
+    for action in registry.stack_actions():
+        assert not action.needs_sudo
+        assert action.sudo_rule is None
+
+
+def test_no_action_anywhere_is_granted_sudo_on_docker():
+    for rule in registry.grantable_sudo_rules():
+        assert "docker" not in rule, f"sudo grant on docker: {rule}"
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +310,7 @@ def test_unparameterised_action_rejects_a_value():
 
 def test_parameterised_actions_are_never_granted_sudo():
     """A sudoers rule cannot express 'this list of values' without a wildcard."""
-    for action in ACTIONS:
+    for action in registry.all_actions():
         if action.parameter is not None:
             assert action.sudo_rule is None
 

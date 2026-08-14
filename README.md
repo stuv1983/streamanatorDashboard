@@ -344,6 +344,7 @@ Codes saved only on `streamanator` are useless in the emergency they exist for.
 | Page | Purpose |
 |---|---|
 | Admin jobs | Reboot, service restarts, container restarts, stack deploys |
+| Updates | Pending Ubuntu packages, container image updates, and the buttons for both |
 | API keys | UniFi, Plex, Sonarr, Radarr, Prowlarr, SABnzbd, qBittorrent, Tautulli |
 | Disk health setup | Unblock SMART via the exporter or the sudoers rule |
 | Service probes | Add, retarget and test application health checks |
@@ -377,6 +378,80 @@ the page — there is no code path to them.
 
 `tests/test_admin_actions.py` asserts these properties structurally, so they
 survive future edits rather than depending on review.
+
+### Updates
+
+The Updates page answers "what is behind, and when was it last touched" before
+it offers to do anything about it.
+
+**Read-only, no privilege required.** Pending package count and how many are
+security updates (`apt-get -s upgrade`, or `apt-check` when
+update-notifier-common is installed); when apt last refreshed its lists and
+when it last actually upgraded something (`/var/log/apt/history.log`); whether
+a reboot is pending and which packages asked for it. For containers: when each
+was last recreated, when its image was built, and whether the tag it tracks now
+points at a newer digest.
+
+The digest check queries each image's registry directly over HTTPS — no
+`docker pull`, nothing written. A manifest request counts against Docker Hub's
+anonymous allowance (100 per six hours per IP), so results are cached for six
+hours and a failed lookup caches too. **A registry that could not be reached
+renders as UNKNOWN, never as up to date** — that is the one wrong answer that
+would stop someone looking. Set `UPDATES_CHECK_REGISTRY=false` to skip the
+lookups entirely on a metered connection.
+
+**Installing Ubuntu updates** starts a systemd unit rather than running apt
+through the dashboard:
+
+```bash
+sudo install -m 0644 -o root -g root     deploy/streamanator-apt-upgrade.service     /etc/systemd/system/streamanator-apt-upgrade.service
+sudo systemctl daemon-reload
+```
+
+The sudoers drop-in then grants permission to start exactly that unit. Three
+reasons it works this way, all of them learned from the alternatives:
+
+- A NOPASSWD grant on `apt-get upgrade` runs maintainer scripts as root and
+  would be the broadest entry in the sudoers file by a wide margin. The grant
+  that exists instead is for one named unit whose file is root-owned in
+  `/etc/systemd/system` — the same rule that keeps every other sudo entry off a
+  path the dashboard account can write.
+- An upgrade routinely outruns any timeout it would be sane to hold a web
+  request open for, and the runner reports a timed-out command as "outcome
+  UNKNOWN". For dpkg that is the worst answer available. Started with
+  `--no-block`, the unit outlives the click, the tab, and a restart of the
+  dashboard; the page polls systemd for progress.
+- dpkg conffile prompts hang forever without `DEBIAN_FRONTEND=noninteractive`,
+  which the runner's minimal environment strips. The unit file sets it, along
+  with `--force-confold` so a hand-edited config is never silently replaced.
+
+The unit runs `apt-get update` then `apt-get upgrade` — never `full-upgrade`,
+which may remove packages, and never `install`. It ships with no `[Install]`
+section and must not be enabled: an upgrade on every boot is a different
+feature, and `unattended-upgrades` already implements it.
+
+**Updating containers** runs `docker compose up -d --pull always` in a stack's
+own directory — one argv, no shell, no sudo (the dashboard account is already
+in the `docker` group). Only containers whose image actually changed are
+recreated.
+
+Each stack's directory comes from an environment variable and nothing else:
+
+| Variable | Stack |
+|---|---|
+| `MEDIA_STACK_DIR` | Gluetun, SABnzbd, Sonarr, Radarr, Prowlarr, qBittorrent |
+| `IMMICH_STACK_DIR` | Immich |
+| `MONITORING_STACK_DIR` | Prometheus, Grafana and the exporters (defaults to `deploy/monitoring-stack`) |
+
+The dashboard *can* discover these from the labels Compose writes onto every
+container, and the page shows the discovered path for an unconfigured stack —
+but a discovered path is never used as a working directory. A compose file is
+an arbitrary-code-execution format, so where one is read from is a
+configuration decision, not a discovery one. An unset variable means the stack
+renders as "not configured" with the SSH command shown, never as a guess.
+
+Note the blast radius the page states before you confirm: recreating Gluetun
+drops the network namespace every other media container shares.
 
 ### Optional: passwordless sudo for the allowlisted commands
 
@@ -448,6 +523,10 @@ operator action. The dashboard itself never reads `/root/docker` at runtime.
 | `HISTORY_DB_PATH` | `var/history.sqlite3` | Local time-series store. |
 | `HISTORY_SAMPLE_INTERVAL` | `60` | Background sampler period. |
 | `SMARTCTL_SUDO` | `false` | Enable after installing the sudoers drop-in. |
+| `UPDATES_CHECK_REGISTRY` | `true` | Query image registries for newer digests. Off = every container reports UNKNOWN. |
+| `MEDIA_STACK_DIR` | *(empty)* | Compose directory for the media stack. Unset = no update button. |
+| `IMMICH_STACK_DIR` | *(empty)* | Compose directory for Immich. |
+| `MONITORING_STACK_DIR` | `deploy/monitoring-stack` | Compose directory for Prometheus/Grafana. |
 | `PLEX_URL` | `http://10.0.40.100:32400` | Native service, not a container. |
 | `IMMICH_URL` | `http://10.0.40.100:2283` | |
 | `SPORTS_DATA_LAB_URL` | `http://10.0.40.100:6969` | **6969**, not 8501. |

@@ -26,6 +26,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 GUARDED_PAGES = [
     "admin_actions.py",
+    "admin_updates.py",
     "admin_keys.py",
     "admin_notifications.py",
     "admin_smart.py",

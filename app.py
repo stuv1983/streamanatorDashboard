@@ -106,6 +106,11 @@ if signed_in:
             title="Admin jobs",
             icon=":material/play_circle:",
         ),
+        st.Page(
+            "app_pages/admin_updates.py",
+            title="Updates",
+            icon=":material/system_update_alt:",
+        ),
         st.Page("app_pages/admin_keys.py", title="API keys", icon=":material/key:"),
         st.Page(
             "app_pages/admin_notifications.py",

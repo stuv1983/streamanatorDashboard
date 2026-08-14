@@ -329,14 +329,21 @@ def check_action(action: Action, parameter_value: str | None = None) -> Capabili
             False, f"Directory not found: {action.cwd}", manual_command=manual
         )
 
-    if "systemctl" in Path(binary).name and len(argv) >= 3:
-        unit = argv[2]
-        if argv[1] in {"restart", "start", "stop", "reload"} and not systemd_unit_exists(
-            unit
-        ):
+    if "systemctl" in Path(binary).name:
+        unit = _systemctl_unit(argv)
+        if unit and not systemd_unit_exists(unit):
             return Capability(
                 False,
                 f"The unit `{unit}` is not installed on this host.",
+                manual_command=manual,
+            )
+
+    if "docker" in Path(binary).name and "compose" in argv[:2] and action.cwd:
+        if not _compose_file_in(action.cwd):
+            return Capability(
+                False,
+                f"No compose file in {action.cwd}. `docker compose` would read "
+                "its project from somewhere else, or fail.",
                 manual_command=manual,
             )
 
@@ -361,12 +368,160 @@ def check_action(action: Action, parameter_value: str | None = None) -> Capabili
     return Capability(True, manual_command=manual)
 
 
+#: Compose reads the first of these it finds in a project directory.
+COMPOSE_FILENAMES = (
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+)
+
+_SYSTEMCTL_UNIT_VERBS = {"restart", "start", "stop", "reload", "try-restart"}
+
+
+def _systemctl_unit(argv: list[str]) -> str:
+    """The unit a systemctl invocation acts on, or "" if it names none.
+
+    Options are skipped rather than assumed absent. `systemctl start
+    --no-block foo.service` puts the unit at index 3, and reading index 2
+    unconditionally would have checked systemd for a unit called `--no-block`
+    and reported every such action as uninstallable.
+    """
+    verb = ""
+    for argument in argv[1:]:
+        if argument.startswith("-"):
+            continue
+        if not verb:
+            verb = argument
+            continue
+        return argument if verb in _SYSTEMCTL_UNIT_VERBS else ""
+    return ""
+
+
+def _compose_file_in(directory: str) -> bool:
+    return any((Path(directory) / name).is_file() for name in COMPOSE_FILENAMES)
+
+
+@dataclass(frozen=True)
+class UnitStatus:
+    """A background unit's live state, for polling a job that outlives a click."""
+
+    known: bool
+    active: str = ""
+    result: str = ""
+    #: Unix time the unit last finished, or None while it is still running.
+    finished_at: float | None = None
+    started_at: float | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.active in ("activating", "active", "reloading", "deactivating")
+
+    @property
+    def succeeded(self) -> bool:
+        return not self.running and self.result == "success"
+
+
+def unit_status(unit: str) -> UnitStatus:
+    """Poll a oneshot unit. Read-only, no sudo — `systemctl show` needs none."""
+    properties = (
+        "ActiveState",
+        "Result",
+        "ExecMainStartTimestampMonotonic",
+        "ExecMainExitTimestampMonotonic",
+        "InactiveEnterTimestamp",
+        "ActiveEnterTimestamp",
+        "LoadState",
+    )
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [
+                "systemctl",
+                "show",
+                f"--property={','.join(properties)}",
+                "--",
+                unit,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return UnitStatus(known=False)
+    if completed.returncode != 0:
+        return UnitStatus(known=False)
+
+    values = dict(
+        line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line
+    )
+    if values.get("LoadState") not in ("loaded", "stub", None):
+        return UnitStatus(known=False)
+    return UnitStatus(
+        known=True,
+        active=values.get("ActiveState", ""),
+        result=values.get("Result", ""),
+        finished_at=_systemd_timestamp(values.get("InactiveEnterTimestamp", "")),
+        started_at=_systemd_timestamp(values.get("ActiveEnterTimestamp", "")),
+    )
+
+
+def _systemd_timestamp(value: str) -> float | None:
+    """Parse systemd's `Day YYYY-MM-DD HH:MM:SS TZ` timestamps.
+
+    An empty value means "never", which systemd also spells as the literal
+    string `n/a` on some releases.
+    """
+    text = (value or "").strip()
+    if not text or text == "n/a":
+        return None
+    match = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", text)
+    if not match:
+        return None
+    try:
+        return time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+
+
+def unit_log(unit: str, lines: int = 40) -> list[str]:
+    """Recent journal lines for a unit. Empty when the journal is not readable.
+
+    The dashboard account can read its own units' logs on a default Ubuntu
+    install (the `systemd-journal` group, or `Storage=persistent` with the
+    unit running as root and the reader in `adm`). When it cannot, the page
+    shows the `journalctl` command instead of an empty box pretending there is
+    nothing to see.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [
+                "journalctl",
+                "-u",
+                unit,
+                "-n",
+                str(int(lines)),
+                "--no-pager",
+                "--output=short-iso",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
 def capability_summary() -> dict[str, int]:
     """Counts of ready / ssh-only / blocked, for the console header."""
-    from admin.actions import ACTIONS
+    from admin.actions import all_actions
 
     tally = {"ready": 0, "ssh": 0, "blocked": 0}
-    for action in ACTIONS:
+    for action in all_actions():
         # Parameterised actions are checked against their first allowed value,
         # which is representative: the sudo rule and binary are identical.
         value = None
