@@ -15,6 +15,7 @@ from core.runtime import (
     notification_worker,
     reload_configuration,
 )
+from services.heartbeat import send_heartbeat, validate_ping_url
 from services.notifications import (
     CATEGORY_LABELS,
     SEVERITY_LABELS,
@@ -322,3 +323,139 @@ with status_col:
             st.caption(f"Last weekly report: {delivery_state.last_weekly_period}")
         if worker.last_error:
             st.warning(worker.last_error, icon=":material/warning:")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Dead-man's switch
+# ---------------------------------------------------------------------------
+
+st.markdown("### Dead-man's switch")
+st.caption(
+    "Every alert above is sent by a thread inside this dashboard, so it cannot "
+    "report its own death. A power cut, kernel panic, OOM kill or crash "
+    "produces silence — which looks exactly like health. This inverts that: "
+    "the dashboard pings an outside service every cycle, and that service "
+    "emails you when the pings stop."
+)
+
+stored_ping = stored.get("HEALTHCHECKS_PING_URL", "")
+
+with st.form("heartbeat_settings", clear_on_submit=False):
+    ping_url = st.text_input(
+        "Healthchecks.io ping URL",
+        value=stored_ping,
+        placeholder="https://hc-ping.com/your-check-uuid",
+        help=(
+            "Copy the ping URL from your check's page. Set the check's period "
+            "a little longer than this dashboard's own interval so a single "
+            "slow cycle does not trip it."
+        ),
+    )
+    save_heartbeat = st.form_submit_button(
+        "Save ping URL", icon=":material/save:"
+    )
+
+if save_heartbeat:
+    try:
+        cleaned = ping_url.strip()
+        if cleaned:
+            validate_ping_url(cleaned)
+        changed = update_env_file(
+            settings.auth.env_file, {"HEALTHCHECKS_PING_URL": cleaned or None}
+        )
+        if changed:
+            reload_configuration()
+            audit.record(
+                "notifications.heartbeat_configured",
+                current.username,
+                current.role,
+                "success",
+                severity="notice",
+                # The URL is a capability, so the audit log records that it
+                # changed and never what it changed to.
+                detail="Ping URL set" if cleaned else "Ping URL removed",
+                breakglass=current.breakglass,
+            )
+            st.success(
+                "Ping URL saved and loaded." if cleaned else "Ping URL removed.",
+                icon=":material/check_circle:",
+            )
+        else:
+            st.info("Nothing changed.", icon=":material/info:")
+    except (ValueError, OSError) as exc:
+        st.error(f"Ping URL was not saved: {exc}", icon=":material/error:")
+
+heartbeat_test, heartbeat_status = st.columns([1, 2], vertical_alignment="top")
+with heartbeat_test:
+    if st.button(
+        "Send test ping",
+        icon=":material/favorite:",
+        width="stretch",
+        disabled=not get_settings().heartbeat.configured,
+    ):
+        result = send_heartbeat(get_settings().heartbeat)
+        audit.record(
+            "notifications.heartbeat_test",
+            current.username,
+            current.role,
+            "success" if result.ok else "failure",
+            severity="notice" if result.ok else "warning",
+            detail=result.message,
+            breakglass=current.breakglass,
+        )
+        if result.ok:
+            st.success(
+                f"{result.message} The check should now show as up.",
+                icon=":material/check_circle:",
+            )
+        else:
+            st.error(result.message, icon=":material/error:")
+
+with heartbeat_status:
+    with st.container(border=True):
+        st.markdown("**Switch status**")
+        if not get_settings().heartbeat.configured:
+            st.caption(
+                ":gray[Not configured — nothing external is watching this "
+                "dashboard. If it stops, no alert is raised.]"
+            )
+        else:
+            st.caption(f"Pinged every {worker.interval // 60} min with each check")
+            if worker.last_heartbeat:
+                st.caption(f"Last ping: {format_timestamp(worker.last_heartbeat)}")
+            elif worker.runs:
+                st.caption(":gray[No successful ping yet.]")
+            if worker.last_heartbeat_error:
+                st.warning(worker.last_heartbeat_error, icon=":material/warning:")
+
+with st.expander("What trips the switch, and what deliberately does not"):
+    st.markdown(
+        """
+The switch reports on **the monitoring pipeline**, not on the server's health.
+Those are different questions with different audiences, and merging them would
+make the one signal that means "you are flying blind" indistinguishable from
+routine noise.
+
+**Pings stop** (Healthchecks.io alerts after its period lapses) when the
+dashboard is not running at all: power loss, kernel panic, OOM kill, a crashed
+process, or the host losing its internet connection.
+
+**An immediate failure signal** is sent when the dashboard is alive but its
+alerting is broken — a collection that raised, or an alert email that could not
+be delivered. That second case is the quiet one: with working internet and
+broken SMTP credentials, every ping would otherwise succeed while no alert
+could reach anyone.
+
+**A degraded RAID array, a full disk or a stopped container do _not_ trip it.**
+Those are findings with their own email path. Routing them here as well would
+turn the switch into a second copy of your alert stream, and a signal that
+fires constantly is one you stop reading.
+
+One consequence worth accepting deliberately: an internet outage stops the
+pings, so Healthchecks.io reports the dashboard as down when it is in fact
+running fine and unable to reach the world. That is the correct alarm — during
+an outage the dashboard genuinely cannot tell you anything — but it does mean
+the alert says less than it appears to.
+"""
+    )

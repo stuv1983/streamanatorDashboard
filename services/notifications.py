@@ -843,6 +843,12 @@ class NotificationWorker:
         self.last_error: str | None = None
         self.last_delivery: float | None = None
         self.runs = 0
+        #: Dead-man's-switch state, surfaced on the Email reports page. Kept
+        #: here rather than in the store because it is liveness telemetry, not
+        #: a preference, and it should not survive a restart — a stale "last
+        #: ping" read from disk would describe a process that no longer exists.
+        self.last_heartbeat: float | None = None
+        self.last_heartbeat_error: str | None = None
 
     def start(self) -> "NotificationWorker":
         with self._start_lock:
@@ -869,6 +875,35 @@ class NotificationWorker:
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
+    def _ping_heartbeat(self, *, failed: bool) -> None:
+        """Report liveness outward. Swallows everything — see services.heartbeat.
+
+        Pings regardless of whether email is enabled: the switch answers "is the
+        dashboard still running", which is worth knowing even for someone who
+        never turned notifications on.
+
+        `failed` covers a raised collection *and* an undeliverable alert email.
+        The second case is the subtle one: with working internet but broken SMTP
+        credentials, every ping would otherwise succeed while no alert could
+        actually reach anyone — a monitoring system that is confidently silent.
+        """
+        from services.heartbeat import send_heartbeat
+
+        try:
+            config = self.settings_factory().heartbeat
+            if not config.configured:
+                return
+            result = send_heartbeat(config, failed=failed)
+        except Exception as exc:  # noqa: BLE001 - a ping must never stop the loop
+            self.last_heartbeat_error = f"{type(exc).__name__}: {exc}"
+            log.debug("Heartbeat ping raised", exc_info=True)
+            return
+        if result.ok:
+            self.last_heartbeat = time.time()
+            self.last_heartbeat_error = None
+        else:
+            self.last_heartbeat_error = result.message
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             started = time.time()
@@ -887,6 +922,9 @@ class NotificationWorker:
                 self.last_run = started
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 log.exception("Notification cycle failed")
+            # Always after the try/except, never inside it: a cycle that raised
+            # is exactly the cycle whose failure needs reporting outward.
+            self._ping_heartbeat(failed=self.last_error is not None)
             elapsed = time.time() - started
             self._wake.wait(max(1.0, self.interval - elapsed))
             self._wake.clear()

@@ -904,6 +904,38 @@ class EmailConfig:
 
 
 @dataclass(frozen=True)
+class HeartbeatConfig:
+    """Dead-man's switch: an external service that alerts when we go quiet.
+
+    Every alert this dashboard raises travels over its own email path, from a
+    thread inside its own process. That covers a failing disk; it cannot cover
+    a kernel panic, a power cut, an OOM kill, or the dashboard simply crashing
+    — and in all of those the result is silence, which is indistinguishable
+    from health. This closes that gap by inverting who watches whom: the
+    dashboard pings an outside service on every cycle, and that service raises
+    the alarm when the pings stop.
+
+    The URL is a capability — anyone holding it can ping the check and suppress
+    a real "monitoring is down" alert — so it lives in `.env` alongside the SMTP
+    app password rather than in the JSON preferences store, and HTTPS is
+    required rather than merely recommended.
+    """
+
+    ping_url: str | None = field(
+        default_factory=lambda: env_opt("HEALTHCHECKS_PING_URL")
+    )
+    #: Short by design. This runs inside the notification worker's loop, and a
+    #: slow ping must never delay the next collection cycle.
+    timeout_seconds: float = field(
+        default_factory=lambda: max(1.0, env_float("HEALTHCHECKS_TIMEOUT", 8.0))
+    )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.ping_url)
+
+
+@dataclass(frozen=True)
 class AuthConfig:
     """Administrative access control.
 
@@ -973,6 +1005,7 @@ class Settings:
     auth: AuthConfig = field(default_factory=AuthConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
+    heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
     grafana: GrafanaConfig = field(default_factory=GrafanaConfig)
     unifi: UnifiConfig = field(default_factory=UnifiConfig)

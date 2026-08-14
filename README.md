@@ -470,6 +470,47 @@ renders as "not configured" with the SSH command shown, never as a guess.
 Note the blast radius the page states before you confirm: recreating Gluetun
 drops the network namespace every other media container shares.
 
+### Email alerts and the dead-man's switch
+
+Faults, recoveries and a weekly digest go out over Gmail SMTP, configured under
+**Admin → Email reports**. A background thread re-collects every
+`NOTIFICATION_POLL_INTERVAL` seconds (default 300) and mails anything matching
+the subscribed categories and severities, deduplicated by alert key so a
+degraded array mails once rather than every five minutes.
+
+That covers a failing disk. It cannot cover the dashboard itself dying — the
+alerting thread lives inside the process that just died, so a power cut, kernel
+panic, OOM kill or crash produces **silence, which is indistinguishable from
+health**. This is the gap that makes monitoring feel like it is working right
+up until the moment you need it.
+
+Setting `HEALTHCHECKS_PING_URL` closes it by inverting the direction of
+monitoring: the dashboard pings an outside service on every cycle, and that
+service alerts when the pings stop. Nothing on this host has to be working for
+that alarm to fire, which is the whole point.
+
+Two deliberate design decisions:
+
+- **Liveness is not health.** A degraded array, a full disk or a stopped
+  container do *not* trip the switch. They are findings with their own email
+  path, and duplicating them here would turn the one signal meaning "you are
+  flying blind" into routine noise you learn to ignore.
+- **A broken pipeline sends an immediate failure signal.** If a collection
+  raises, or an alert email cannot be delivered, the dashboard pings `/fail`
+  rather than waiting for the check's period to lapse. The second case is the
+  quiet one: with working internet and broken SMTP credentials every ping would
+  otherwise succeed while no alert could reach anyone.
+
+The ping URL is a capability — anyone holding it can ping the check and suppress
+a genuine "the dashboard is down" alarm — so it lives in `.env` beside the SMTP
+app password, HTTPS is enforced rather than encouraged, and the audit log
+records that it changed without recording what it changed to.
+
+One consequence to accept knowingly: an internet outage stops the pings, so the
+check reports the dashboard as down when it is running fine and merely unable to
+reach the world. That is the correct alarm — during an outage the dashboard
+genuinely cannot tell you anything — but it says less than it appears to.
+
 ### Optional: passwordless sudo for the allowlisted commands
 
 Without this, actions needing root render as SSH commands. This makes them run
@@ -558,6 +599,9 @@ operator action. The dashboard itself never reads `/root/docker` at runtime.
 | `RAID_REQUIRED_MEMBERS` | `4` | |
 | `SPORTS_BACKUP_DIR` | `/mnt/media/sportsDBackUp` | |
 | `NIGHTLY_BACKUP_DIR` | `/mnt/backup/nightly` | Undocumented backup disk. |
+| `NOTIFICATION_POLL_INTERVAL` | `300` | How often alerts are evaluated and the dead-man's switch is pinged. |
+| `HEALTHCHECKS_PING_URL` | *(empty)* | Dead-man's switch. Unset = nothing external watches the dashboard. |
+| `HEALTHCHECKS_TIMEOUT` | `8` | Ping timeout; short so it cannot delay a collection cycle. |
 
 Secrets — `PLEX_TOKEN`, `SONARR_API_KEY`, `RADARR_API_KEY`,
 `PROWLARR_API_KEY`, `SABNZBD_API_KEY`, `QBITTORRENT_USER`/`_PASSWORD`,
