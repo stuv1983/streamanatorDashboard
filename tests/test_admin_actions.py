@@ -180,6 +180,37 @@ def test_apt_unit_file_is_not_under_the_project_directory_when_granted():
 
 
 # ---------------------------------------------------------------------------
+# Backups: oneshot jobs are started, never restarted
+# ---------------------------------------------------------------------------
+
+
+def test_backup_actions_start_without_blocking():
+    """`restart` blocks until a oneshot finishes. Pointed at a backup that runs
+    for minutes, it guarantees the runner's timeout fires and reports a healthy
+    job as 'outcome UNKNOWN' — which invites a duplicate run of a backup."""
+    for key in ("backup.run_nightly_system", "backup.run_sports_data_lab"):
+        action = registry.find(key)
+        assert action is not None, f"{key} is missing from the registry"
+        assert "start" in action.argv, f"{key} does not start its unit"
+        assert "--no-block" in action.argv, f"{key} would block the runner"
+        assert "restart" not in action.argv, f"{key} restarts a oneshot"
+
+
+def test_no_backup_unit_is_reachable_through_a_restart_action():
+    """The nightly backup used to sit in MANAGED_UNITS, which generated a
+    `systemctl restart backup-nightly.service` action that timed out every
+    single time it was pressed."""
+    for action in registry.all_actions():
+        if "restart" not in action.argv:
+            continue
+        for argument in action.argv:
+            assert "backup" not in argument, (
+                f"{action.key} restarts a backup unit ({argument}); backups are "
+                "oneshot and must use `start --no-block`"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Compose stack updates
 # ---------------------------------------------------------------------------
 

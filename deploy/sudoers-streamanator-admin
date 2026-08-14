@@ -52,7 +52,6 @@
 
 Cmnd_Alias STREAMANATOR_SERVICES = \
     /usr/bin/systemctl restart streamanator-dashboard, \
-    /usr/bin/systemctl restart backup-nightly.service, \
     /usr/bin/systemctl restart sports-data-lab.service, \
     /usr/bin/systemctl restart aqualog.service, \
     /usr/bin/systemctl restart plexmediaserver.service, \
@@ -74,10 +73,16 @@ Cmnd_Alias STREAMANATOR_UPDATES = \
     /usr/bin/systemctl start --no-block streamanator-apt-upgrade.service
 
 # On-demand backups. Same reasoning as STREAMANATOR_UPDATES above: one named
-# unit rather than a grant on the backup script itself. Requires
-# deploy/streamanator-sports-backup.service to be installed first.
+# unit rather than a grant on the backup script itself. The sports unit
+# requires deploy/streamanator-sports-backup.service to be installed first;
+# backup-nightly.service is the host's own timer-driven job.
+#
+# `start --no-block`, never `restart`. Both are oneshot units that run for
+# minutes, and `restart` blocks until the job finishes — long past any timeout
+# a web request can hold, which makes a healthy backup report as UNKNOWN.
 Cmnd_Alias STREAMANATOR_BACKUPS = \
-    /usr/bin/systemctl start --no-block streamanator-sports-backup.service
+    /usr/bin/systemctl start --no-block streamanator-sports-backup.service, \
+    /usr/bin/systemctl start --no-block backup-nightly.service
 
 arm ALL=(root) NOPASSWD: STREAMANATOR_SERVICES, STREAMANATOR_POWER, \
                          STREAMANATOR_UPDATES, STREAMANATOR_BACKUPS

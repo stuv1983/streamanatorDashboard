@@ -242,6 +242,31 @@ def measure_directory_size(
     return total, complete
 
 
+def is_still_being_written(path: str, sample_seconds: float = 2.0) -> bool:
+    """Whether a backup file is still growing, sampled across a short interval.
+
+    The sports backup script writes straight to its final `.tar.gz` name rather
+    than to a `.part` the scan would skip, so an archive that is half-written is
+    indistinguishable from a finished one by name alone. Running `gzip -t`
+    against it reports "unexpected end of file" — which is exactly what a
+    truncated *finished* backup looks like, and is alarming for no reason.
+
+    Two size samples is a heuristic, not a lock: a job stalled mid-write looks
+    settled here. It is enough to catch the common case of verifying a backup
+    that was triggered a minute ago, which is the one that produces a false
+    corruption report.
+    """
+    try:
+        first = os.stat(path).st_size
+    except OSError:
+        return False
+    time.sleep(max(0.0, sample_seconds))
+    try:
+        return os.stat(path).st_size != first
+    except OSError:
+        return False
+
+
 def next_expected_run(
     weekdays: tuple[int, ...], hour: int, minute: int = 0, now: float | None = None
 ) -> float | None:

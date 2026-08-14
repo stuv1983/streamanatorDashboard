@@ -67,6 +67,12 @@ APT_UPGRADE_UNIT = "streamanator-apt-upgrade.service"
 #: takes minutes to read and compress a multi-gigabyte archive.
 SPORTS_BACKUP_UNIT = "streamanator-sports-backup.service"
 
+#: The existing nightly backup job, normally started by backup-nightly.timer.
+#: Triggered with `start --no-block` and never with `restart`: it is a oneshot
+#: that runs for minutes, so `restart` would block the runner until its timeout
+#: and report a healthy backup as "outcome UNKNOWN".
+NIGHTLY_BACKUP_UNIT = "backup-nightly.service"
+
 
 class Risk(str, Enum):
     """How much a mistake costs."""
@@ -228,20 +234,21 @@ def _restartable_containers() -> list[str]:
 # Units this dashboard is permitted to control
 # ---------------------------------------------------------------------------
 
-#: Each unit is named explicitly. A `systemctl restart *` sudo rule would allow
-#: restarting units whose ExecStart is arbitrary root code.
+#: Long-running services this dashboard may restart. Each unit is named
+#: explicitly — a `systemctl restart *` sudo rule would allow restarting units
+#: whose ExecStart is arbitrary root code.
+#:
+#: Oneshot jobs do NOT belong here, however useful "run it again" sounds.
+#: `systemctl restart` blocks until the unit finishes, so pointing it at a
+#: backup that runs for minutes guarantees the runner's timeout fires and
+#: reports "outcome UNKNOWN" on a job that was in fact running normally. Those
+#: get their own `start --no-block` action below, alongside the apt upgrade.
 MANAGED_UNITS: tuple[tuple[str, str, str], ...] = (
     (
         "streamanator-dashboard",
         "Dashboard",
         "Restarts this dashboard. Your browser will lose its connection for "
         "a few seconds and you will be signed out of the admin session.",
-    ),
-    (
-        "backup-nightly.service",
-        "Nightly backup",
-        "Re-runs the nightly backup job now. Safe to run at any time; it does "
-        "not delete previous backups.",
     ),
     (
         "sports-data-lab.service",
@@ -289,7 +296,7 @@ def _unit_actions() -> list[Action]:
                 binary_candidates=_SYSTEMCTL_ALTS,
                 risk=Risk.DISRUPTIVE,
                 needs_sudo=True,
-                needs_step_up=base != "backup-nightly",
+                needs_step_up=True,
                 timeout=90.0,
                 rationale=(
                     "Named explicitly rather than accepting a unit name, so no "
@@ -362,6 +369,34 @@ ACTIONS: tuple[Action, ...] = (
         tags=("systemd",),
     ),
     *_unit_actions(),
+    Action(
+        key="backup.run_nightly_system",
+        label="Run nightly system backup now",
+        group="Services",
+        summary=f"systemctl start --no-block {NIGHTLY_BACKUP_UNIT}",
+        explain=(
+            "Runs the nightly system backup now, outside its 02:00 schedule. "
+            "It writes a new dated directory under the backup destination; "
+            "previous backups are not deleted, and no service is stopped or "
+            "restarted.\n\n"
+            "The unit is started, not waited for: it keeps running if you "
+            "close this tab or restart the dashboard. Follow progress with "
+            "`journalctl -fu " + NIGHTLY_BACKUP_UNIT + "`."
+        ),
+        argv=(_SYSTEMCTL, "start", "--no-block", NIGHTLY_BACKUP_UNIT),
+        binary_candidates=_SYSTEMCTL_ALTS,
+        risk=Risk.SAFE,
+        needs_sudo=True,
+        timeout=30.0,
+        rationale=(
+            "`start --no-block`, never `restart`. The unit is a oneshot that "
+            "runs for minutes, so `restart` would hold the runner until its "
+            "timeout and report a backup that was running normally as "
+            "'outcome UNKNOWN' — which is the worst answer available for a "
+            "backup, because it invites a duplicate run."
+        ),
+        tags=("backups", "systemd"),
+    ),
     Action(
         key="backup.run_sports_data_lab",
         label="Run Sports Data Lab backup now",

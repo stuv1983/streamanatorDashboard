@@ -19,6 +19,7 @@ from config import get_settings
 from core.runtime import get_snapshot, history_store
 from core.status import Status
 from services.backups import (
+    is_still_being_written,
     measure_directory_size,
     verify_backup,
     verify_sqlite_in_archive,
@@ -42,8 +43,29 @@ statuses = snapshot.raw.get("backups", {}).get("jobs", [])
 #: to run it" is exactly the question an alert on this page prompts.
 TRIGGER_LABELS: dict[str, str] = {
     "sports_data_lab": "Run Sports Data Lab backup now",
-    "nightly_system": "Restart Nightly backup (re-runs it now)",
+    "nightly_system": "Run nightly system backup now",
 }
+
+
+def in_progress_warning(path: str) -> bool:
+    """Warn and return True when `path` is still growing, so verification stops.
+
+    A half-written archive fails `gzip -t` with "unexpected end of file" — the
+    same message a genuinely truncated backup produces. Reporting that as
+    corruption on a backup that is merely still running is the kind of false
+    alarm that gets a real one ignored later.
+    """
+    with st.spinner("Checking the archive is not still being written…"):
+        growing = is_still_being_written(path)
+    if growing:
+        st.warning(
+            "This backup is still being written — its size is changing. "
+            "Verifying now would report 'unexpected end of file', which looks "
+            "identical to a corrupt archive. Wait for the run to finish, then "
+            "verify.",
+            icon=":material/hourglass_top:",
+        )
+    return growing
 
 
 def trigger_link(job_key: str) -> None:
@@ -221,22 +243,23 @@ for job, status in zip(settings.backups, statuses):
                     icon=":material/fact_check:",
                     width="stretch",
                 ):
-                    with st.spinner(
-                        f"Reading {human_bytes(status.latest.size_bytes)} — this "
-                        f"takes a few minutes…"
-                    ):
-                        result = verify_backup(status.latest.path)
-                    history_store().put_state(
-                        f"backup.{job.key}.integrity",
-                        "ok" if result.ok else result.detail[:200],
-                    )
-                    if result.ok:
-                        st.success(
-                            f"{result.method}: ok ({human_duration(result.duration_seconds)})",
-                            icon=":material/check_circle:",
+                    if not in_progress_warning(status.latest.path):
+                        with st.spinner(
+                            f"Reading {human_bytes(status.latest.size_bytes)} — this "
+                            f"takes a few minutes…"
+                        ):
+                            result = verify_backup(status.latest.path)
+                        history_store().put_state(
+                            f"backup.{job.key}.integrity",
+                            "ok" if result.ok else result.detail[:200],
                         )
-                    else:
-                        st.error(f"{result.method}: {result.detail}", icon=":material/error:")
+                        if result.ok:
+                            st.success(
+                                f"{result.method}: ok ({human_duration(result.duration_seconds)})",
+                                icon=":material/check_circle:",
+                            )
+                        else:
+                            st.error(f"{result.method}: {result.detail}", icon=":material/error:")
 
             with deep:
                 if st.button(
@@ -251,16 +274,17 @@ for job, status in zip(settings.backups, statuses):
                         "not merely decompressible."
                     ),
                 ):
-                    with st.spinner("Extracting and verifying…"):
-                        result = verify_sqlite_in_archive(status.latest.path)
-                    history_store().put_state(
-                        f"backup.{job.key}.integrity",
-                        "ok" if result.ok else result.detail[:200],
-                    )
-                    if result.ok:
-                        st.success(f"Restore test passed — {result.detail}", icon=":material/verified:")
-                    else:
-                        st.error(f"Restore test failed — {result.detail}", icon=":material/error:")
+                    if not in_progress_warning(status.latest.path):
+                        with st.spinner("Extracting and verifying…"):
+                            result = verify_sqlite_in_archive(status.latest.path)
+                        history_store().put_state(
+                            f"backup.{job.key}.integrity",
+                            "ok" if result.ok else result.detail[:200],
+                        )
+                        if result.ok:
+                            st.success(f"Restore test passed — {result.detail}", icon=":material/verified:")
+                        else:
+                            st.error(f"Restore test failed — {result.detail}", icon=":material/error:")
 
         trigger_link(job.key)
 
