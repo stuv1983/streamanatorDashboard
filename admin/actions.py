@@ -59,6 +59,14 @@ COMPOSE_DIR = PROJECT_ROOT / "deploy" / "monitoring-stack"
 #:   which the runner's minimal environment would strip. The unit file sets it.
 APT_UPGRADE_UNIT = "streamanator-apt-upgrade.service"
 
+#: The oneshot unit that runs the Sports Data Lab backup script on demand.
+#: Fixed in source for the same reason as APT_UPGRADE_UNIT above: the script
+#: it wraps (/usr/local/sbin/sports-data-backup.sh) already runs unattended
+#: from the root crontab, and a `systemctl start --no-block` on one named
+#: unit outlives the web request that started it — the backup routinely
+#: takes minutes to read and compress a multi-gigabyte archive.
+SPORTS_BACKUP_UNIT = "streamanator-sports-backup.service"
+
 
 class Risk(str, Enum):
     """How much a mistake costs."""
@@ -354,6 +362,35 @@ ACTIONS: tuple[Action, ...] = (
         tags=("systemd",),
     ),
     *_unit_actions(),
+    Action(
+        key="backup.run_sports_data_lab",
+        label="Run Sports Data Lab backup now",
+        group="Services",
+        summary=f"systemctl start --no-block {SPORTS_BACKUP_UNIT}",
+        explain=(
+            "Runs the Sports Data Lab backup script now, outside its Wed/Sun "
+            "23:00 schedule. It reads the live database and writes a new "
+            "archive under the backup directory; existing archives are not "
+            "touched or deleted, and the running Sports Data Lab app is not "
+            "restarted or interrupted.\n\n"
+            "The unit is started, not waited for: it keeps running if you "
+            "close this tab or restart the dashboard. Check the Backups page "
+            "for the new archive once it completes, or follow progress with "
+            "`journalctl -fu " + SPORTS_BACKUP_UNIT + "`."
+        ),
+        argv=(_SYSTEMCTL, "start", "--no-block", SPORTS_BACKUP_UNIT),
+        binary_candidates=_SYSTEMCTL_ALTS,
+        risk=Risk.SAFE,
+        needs_sudo=True,
+        timeout=30.0,
+        rationale=(
+            "One named unit rather than a sudo grant on the backup script "
+            "itself, for the same reason as server.apt_upgrade: the unit "
+            "file is root-owned in /etc/systemd/system, so the dashboard "
+            "account cannot rewrite what it starts."
+        ),
+        tags=("backups", "systemd"),
+    ),
     # -- Docker ------------------------------------------------------------
     Action(
         key="docker.restart_container",

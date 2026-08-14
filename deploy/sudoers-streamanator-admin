@@ -73,8 +73,14 @@ Cmnd_Alias STREAMANATOR_POWER = \
 Cmnd_Alias STREAMANATOR_UPDATES = \
     /usr/bin/systemctl start --no-block streamanator-apt-upgrade.service
 
+# On-demand backups. Same reasoning as STREAMANATOR_UPDATES above: one named
+# unit rather than a grant on the backup script itself. Requires
+# deploy/streamanator-sports-backup.service to be installed first.
+Cmnd_Alias STREAMANATOR_BACKUPS = \
+    /usr/bin/systemctl start --no-block streamanator-sports-backup.service
+
 arm ALL=(root) NOPASSWD: STREAMANATOR_SERVICES, STREAMANATOR_POWER, \
-                         STREAMANATOR_UPDATES
+                         STREAMANATOR_UPDATES, STREAMANATOR_BACKUPS
 
 # Belt and braces. If the aliases above are ever loosened by an edit, these
 # denials still block the forms that would turn a service restart into

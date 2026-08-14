@@ -430,6 +430,23 @@ which may remove packages, and never `install`. It ships with no `[Install]`
 section and must not be enabled: an upgrade on every boot is a different
 feature, and `unattended-upgrades` already implements it.
 
+**Running the Sports Data Lab backup on demand** works the same way — a named
+unit, started with `--no-block`, rather than a sudo grant on the backup script
+itself:
+
+```bash
+sudo install -m 0644 -o root -g root \
+    deploy/streamanator-sports-backup.service \
+    /etc/systemd/system/streamanator-sports-backup.service
+sudo systemctl daemon-reload
+```
+
+Until this unit (and the sudoers drop-in below) are installed, the "Run Sports
+Data Lab backup now" button on the Admin jobs page shows as SSH-only and
+explains why — the same is true for "Install Ubuntu updates" until the
+apt-upgrade unit above is installed. Neither is installed by deploying new
+dashboard code; both are root-owned files and are always a manual step.
+
 **Updating containers** runs `docker compose up -d --pull always` in a stack's
 own directory — one argv, no shell, no sudo (the dashboard account is already
 in the `docker` group). Only containers whose image actually changed are

@@ -1,0 +1,50 @@
+# Runs the Sports Data Lab backup script on demand, started by the
+# dashboard's admin console.
+#
+# Install with:
+#   sudo install -m 0644 -o root -g root \
+#       deploy/streamanator-sports-backup.service \
+#       /etc/systemd/system/streamanator-sports-backup.service
+#   sudo systemctl daemon-reload
+#
+# Then install deploy/sudoers-streamanator-admin, which grants the dashboard
+# account permission to start exactly this unit and nothing else.
+#
+# ---------------------------------------------------------------------------
+# WHY A UNIT INSTEAD OF A SUDO GRANT ON THE SCRIPT DIRECTLY
+# ---------------------------------------------------------------------------
+#
+#   * The script already runs unattended from the root crontab
+#     (/usr/local/sbin/sports-data-backup.sh, Wed & Sun 23:00). Wrapping it in
+#     a unit keeps every privileged trigger in this registry the same shape:
+#     one named unit, root-owned in /etc/systemd/system — not a NOPASSWD grant
+#     on a script path, which is harder to review at a glance.
+#
+#   * The archive this script writes is multiple gigabytes, and reading the
+#     live database plus compressing the result routinely takes minutes.
+#     Started with `--no-block`, this unit outlives the click, the browser
+#     tab, and a restart of the dashboard itself — the same reasoning that
+#     shapes streamanator-apt-upgrade.service.
+#
+#   * journald keeps the output, so a manually-triggered run leaves the same
+#     kind of record as the scheduled cron run.
+#
+# Deliberately does not touch the crontab entry: the schedule is a separate
+# concern from an on-demand run, and duplicating it here would be a second
+# place to keep in sync.
+
+[Unit]
+Description=Streamanator dashboard: on-demand Sports Data Lab backup
+Documentation=file:///etc/systemd/system/streamanator-sports-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sports-data-backup.sh
+
+# The script budgets its own time; this is a backstop against a wedged run
+# holding the unit forever rather than a normal completion time.
+TimeoutStartSec=3600
+
+# Deliberately no [Install] section. This unit is started on demand only —
+# see streamanator-apt-upgrade.service for why a WantedBy= here would be a
+# different feature with a different risk profile.

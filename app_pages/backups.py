@@ -35,6 +35,26 @@ snapshot = get_snapshot()
 backups = snapshot.component("backups")
 statuses = snapshot.raw.get("backups", {}).get("jobs", [])
 
+#: This page only observes. Actually running a backup is a control action —
+#: it starts a privileged systemd unit — so it lives in the Admin section,
+#: same as every other button that changes the system. See read_only_notice()
+#: below for the general statement; these two exist because "where do I click
+#: to run it" is exactly the question an alert on this page prompts.
+TRIGGER_LABELS: dict[str, str] = {
+    "sports_data_lab": "Run Sports Data Lab backup now",
+    "nightly_system": "Restart Nightly backup (re-runs it now)",
+}
+
+
+def trigger_link(job_key: str) -> None:
+    label = TRIGGER_LABELS.get(job_key)
+    if label is None:
+        return
+    # A plain caption, not st.page_link: this page is rendered standalone in
+    # tests (no navigation context to resolve a page link against), and in
+    # the real app the destination already requires sign-in on arrival.
+    st.caption(f":gray[**{label}** — Admin → Admin jobs (sign-in required).]")
+
 page_header(
     "Backups",
     "Backup recency, plausibility and verified integrity",
@@ -242,6 +262,8 @@ for job, status in zip(settings.backups, statuses):
                     else:
                         st.error(f"Restore test failed — {result.detail}", icon=":material/error:")
 
+        trigger_link(job.key)
+
         # ---- Retained files -------------------------------------------
         if status.retained_count:
             with st.expander(f"Retained backups ({status.retained_count})"):
@@ -274,5 +296,8 @@ if not backup_alerts:
     st.success("No backup problems detected.", icon=":material/check_circle:")
 for alert in backup_alerts:
     alert_card(alert)
+    # Every backup alert key ends in the job key (e.g. "backup.size.<job>"),
+    # so this reaches the right trigger regardless of which check fired.
+    trigger_link(alert.key.rsplit(".", 1)[-1])
 
 read_only_notice()
