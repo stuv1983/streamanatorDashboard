@@ -1,16 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
-import { createSessionToken, getAdminPassword, sessionIsConfigured } from "@/lib/admin-session";
-
-function equalSecret(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
+import { checkAdminPassword, createSessionToken, passwordLockedOut, sessionIsConfigured } from "@/lib/admin-session";
 
 export async function POST(req: NextRequest) {
   const { password } = await req.json();
-  const adminPassword = getAdminPassword();
 
   if (!sessionIsConfigured()) {
     return NextResponse.json(
@@ -19,7 +11,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (typeof password !== "string" || !equalSecret(password, adminPassword)) {
+  if (passwordLockedOut()) {
+    return NextResponse.json({ error: "Too many failed attempts. Try again in 15 minutes." }, { status: 429 });
+  }
+
+  if (!checkAdminPassword(password)) {
     return NextResponse.json({ error: "Incorrect password." }, { status: 401 });
   }
 

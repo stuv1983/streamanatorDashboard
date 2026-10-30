@@ -202,4 +202,5 @@ export const COMPONENT_WEIGHTS: Record<string, number> = {
   applications: envFloat("WEIGHT_APPLICATIONS", 10.0),
   backups: envFloat("WEIGHT_BACKUPS", 10.0),
   security: envFloat("WEIGHT_SECURITY", 5.0),
+  conditions: envFloat("WEIGHT_CONDITIONS", 5.0),
 };

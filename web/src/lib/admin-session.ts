@@ -1,6 +1,7 @@
 // Server-only helper for admin session cookies.
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
+import { timingSafeEqual } from "node:crypto";
 
 const COOKIE_NAME = "admin_session";
 const SESSION_DURATION_SECONDS = 8 * 60 * 60;
@@ -56,6 +57,29 @@ export async function isAdminAuthenticated(): Promise<boolean> {
 export function getAdminPassword(): string {
   const env = process.env;
   return env.ADMIN_PASSWORD ?? "";
+}
+
+// Failed password checks, shared by login and step-up. In memory on purpose:
+// a restart clears it, which is acceptable for a LAN-only tool, and it never
+// writes attacker-controlled input to disk.
+const failures: number[] = [];
+const FAILURE_WINDOW_MS = 15 * 60_000;
+const MAX_FAILURES = 5;
+
+export function passwordLockedOut(now = Date.now()): boolean {
+  while (failures.length && now - failures[0] > FAILURE_WINDOW_MS) failures.shift();
+  return failures.length >= MAX_FAILURES;
+}
+
+/** Constant-time comparison against ADMIN_PASSWORD; counts failures toward the lockout. */
+export function checkAdminPassword(candidate: unknown): boolean {
+  const expected = getAdminPassword();
+  if (!expected || typeof candidate !== "string" || passwordLockedOut()) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(expected);
+  const ok = a.length === b.length && timingSafeEqual(a, b);
+  if (!ok) failures.push(Date.now());
+  return ok;
 }
 
 export function sessionIsConfigured(): boolean {

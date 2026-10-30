@@ -57,6 +57,9 @@ Thumbs.db
 # ---------------------------------------------------------------------------
 web/node_modules/
 web/.next/
+web/.next-build/
+web/.next-prev/
+web/.next-failed/
 web/.npm-cache/
 web/next-env.d.ts
 *.tsbuildinfo

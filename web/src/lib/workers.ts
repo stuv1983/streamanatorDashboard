@@ -4,9 +4,12 @@ const globalForWorkers = global as unknown as {
   __notificationTimer?: NodeJS.Timeout;
 };
 
-import { getSnapshot, startSampler } from './runtime';
+import { getHistoryStore, getSnapshot, startSampler } from './runtime';
 import { getSettings } from './config';
 import { runNotificationCycle } from './notifications';
+import { getLiveSampler } from './live';
+import { startConditionEngine } from './conditions';
+import { startInventorySchedule } from './inventory';
 
 export function startWorkers() {
   if (globalForWorkers.__workersStarted) {
@@ -16,6 +19,11 @@ export function startWorkers() {
   console.log("Starting background workers (Sampler, NotificationWorker, etc.)...");
   
   startSampler();
+  // Started at boot rather than on first viewer, so the ten-minute buffer is
+  // already full when the wall display reconnects after a restart.
+  const live = getLiveSampler();
+  startConditionEngine(listener => live.subscribe(listener));
+  startInventorySchedule((category, summary, detail, status) => getHistoryStore().addEvent(category, summary, detail, status));
 
   const notificationLoop = async () => {
     const settings = getSettings();

@@ -117,6 +117,25 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Chart palette. The app is dark-only, so these are the dark-surface steps of
+   a CVD-validated categorical order: assign slots in order, never by rank.
+   Status colours are separate and always ship with a label. */
+.dark {
+  --series-1: #3987e5; /* blue */
+  --series-2: #d95926; /* orange */
+  --series-3: #199e70; /* aqua */
+  --series-4: #c98500; /* yellow */
+  --series-5: #d55181; /* magenta */
+  --series-7: #9085e9; /* violet */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --chart-grid: #2c2c2a;
+  --chart-axis: #383835;
+  --chart-muted: #898781;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

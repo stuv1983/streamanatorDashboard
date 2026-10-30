@@ -1,4 +1,5 @@
 import { Status, Reading, Alert, ComponentHealth, ChangeEvent } from './status';
+import { conditionFindings } from "./conditions";
 import { getThresholds, Thresholds, COMPONENT_WEIGHTS } from './health/thresholds';
 import { getRank } from './status';
 import { HealthScore, scoreComponent, calculateHealthScore } from './health/scoring';
@@ -1444,6 +1445,14 @@ export async function buildSnapshot(settings: Settings, history: HistoryStore, p
 
     components["security"] = security;
     raw["security"] = securityRaw;
+
+    // Sustained-threshold rules over the one-second live stream. Weighted so
+    // a CRITICAL condition clamps the score like any other critical finding.
+    const findings = conditionFindings();
+    components["conditions"] = scoreComponent(
+        "conditions", "Alert conditions", findings.readings, findings.alerts, null,
+        `${findings.readings.filter(r => !r.optional).length} rules evaluated every second`
+    );
 
     const scored = Object.values(components).filter(c => c.weight > 0);
     const health = calculateHealthScore(scored);

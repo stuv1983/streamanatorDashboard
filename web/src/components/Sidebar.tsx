@@ -19,13 +19,67 @@ import {
   Gauge,
   Menu,
   X,
+  Cpu,
+  ListTree,
+  Cable,
+  Cog,
+  History,
+  Package,
+  MonitorPlay,
+  BellRing,
 } from "lucide-react";
+
+const NAV: Array<{ title?: string; items: Array<{ href: string; label: string; icon: typeof Home }> }> = [
+  { items: [{ href: "/", label: "Overview", icon: Home }, { href: "/wall", label: "Wall display", icon: MonitorPlay }] },
+  {
+    title: "Live",
+    items: [
+      { href: "/live", label: "Task Manager", icon: Cpu },
+      { href: "/processes", label: "Processes", icon: ListTree },
+      { href: "/connections", label: "Connections", icon: Cable },
+      { href: "/services", label: "Services", icon: Cog },
+    ],
+  },
+  {
+    title: "Infrastructure",
+    items: [
+      { href: "/network", label: "Network", icon: Network },
+      { href: "/server", label: "Server", icon: Server },
+      { href: "/performance", label: "Performance history", icon: Gauge },
+      { href: "/storage", label: "Storage", icon: HardDrive },
+      { href: "/raid", label: "RAID & Disks", icon: Database },
+    ],
+  },
+  {
+    title: "Services",
+    items: [
+      { href: "/docker", label: "Docker", icon: Layers },
+      { href: "/vpn", label: "VPN", icon: Shield },
+      { href: "/media", label: "Media", icon: Film },
+      { href: "/applications", label: "Applications", icon: Activity },
+    ],
+  },
+  {
+    title: "Operations",
+    items: [
+      { href: "/alerts", label: "Alert rules", icon: BellRing },
+      { href: "/events", label: "Events & changes", icon: History },
+      { href: "/inventory", label: "Inventory", icon: Package },
+      { href: "/backups", label: "Backups", icon: FileText },
+      { href: "/security", label: "Security", icon: Shield },
+      { href: "/diagnostics", label: "Diagnostics", icon: Stethoscope },
+    ],
+  },
+];
 
 export function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => setIsOpen(false), [pathname]);
+
+  // The wall display is a full-screen kiosk view with no navigation.
+  if (pathname.startsWith("/wall")) return null;
 
   return (
     <>
@@ -58,67 +112,22 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-6">
-        <div className="space-y-1">
-          <Link href="/" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground bg-accent">
-            <Home className="h-4 w-4" />
-            Overview
-          </Link>
-        </div>
-
-        <div>
-          <h3 className="px-3 text-xs font-semibold uppercase text-muted-foreground mb-2 tracking-wider">Infrastructure</h3>
-          <div className="space-y-1">
-            <Link href="/network" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Network className="h-4 w-4" /> Network
-            </Link>
-            <Link href="/server" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Server className="h-4 w-4" /> Server
-            </Link>
-            <Link href="/performance" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Gauge className="h-4 w-4" /> Performance
-            </Link>
-            <Link href="/storage" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <HardDrive className="h-4 w-4" /> Storage
-            </Link>
-            <Link href="/raid" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Database className="h-4 w-4" /> RAID & Disks
-            </Link>
+        {NAV.map(section => (
+          <div key={section.title ?? "home"}>
+            {section.title && <h3 className="px-3 text-xs font-semibold uppercase text-muted-foreground mb-2 tracking-wider">{section.title}</h3>}
+            <div className="space-y-1">
+              {section.items.map(({ href, label, icon: Icon }) => {
+                const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+                return (
+                  <Link key={href} href={href} aria-current={active ? "page" : undefined}
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground ${active ? "bg-accent text-accent-foreground" : ""}`}>
+                    <Icon className="h-4 w-4" /> {label}
+                  </Link>
+                );
+              })}
+            </div>
           </div>
-        </div>
-
-        <div>
-          <h3 className="px-3 text-xs font-semibold uppercase text-muted-foreground mb-2 tracking-wider">Services</h3>
-          <div className="space-y-1">
-            <Link href="/docker" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Layers className="h-4 w-4" /> Docker
-            </Link>
-            <Link href="/vpn" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Shield className="h-4 w-4" /> VPN
-            </Link>
-            <Link href="/media" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Film className="h-4 w-4" /> Media
-            </Link>
-            <Link href="/applications" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Activity className="h-4 w-4" /> Applications
-            </Link>
-          </div>
-        </div>
-
-        <div>
-          <h3 className="px-3 text-xs font-semibold uppercase text-muted-foreground mb-2 tracking-wider">Operations</h3>
-          <div className="space-y-1">
-            <Link href="/backups" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <FileText className="h-4 w-4" /> Backups
-            </Link>
-            <Link href="/security" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Shield className="h-4 w-4" /> Security
-            </Link>
-            <Link href="/diagnostics" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              <Stethoscope className="h-4 w-4" /> Diagnostics
-            </Link>
-          </div>
-        </div>
-
+        ))}
       </nav>
 
       <div className="border-t p-4">
