@@ -4,7 +4,6 @@
 .env
 .env.bak
 .env.bak.*
-.streamlit/secrets.toml
 deploy/monitoring-stack/.env
 # TLS material (e.g. the UniFi console CA bundle) is environment-specific.
 *.pem
@@ -52,3 +51,20 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# ---------------------------------------------------------------------------
+# Node / Next.js (web/ is the application — only its build output is ignored)
+# ---------------------------------------------------------------------------
+web/node_modules/
+web/.next/
+web/.npm-cache/
+web/next-env.d.ts
+*.tsbuildinfo
+
+# Build and transfer artefacts
+*.tar.gz
+*.zip
+next_app/
+
+# Scratch files that have held credentials
+web/test.json

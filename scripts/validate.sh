@@ -26,7 +26,7 @@ if systemctl is-active --quiet streamanator-dashboard; then
 else
   bad "streamanator-dashboard is not running (journalctl -u streamanator-dashboard -n 50)"
 fi
-if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/_stcore/health"; then
+if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
   ok "HTTP health endpoint responding on ${PORT}"
 else
   bad "No response on http://127.0.0.1:${PORT}"
