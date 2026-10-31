@@ -1,421 +1,159 @@
 #!/usr/bin/env bash
+# Deploy this working tree to the server.
 #
-# Incremental deploy of the Streamanator Dashboard to the server.
+#   scripts/deploy.sh             validate locally, ship, build, test, swap, restart
+#   scripts/deploy.sh --dry-run   list what would be shipped and stop
 #
-# Sends only the files whose contents actually differ from the server's copy,
-# backs the server copy up first, restarts the service, waits for it to answer
-# on HTTP, and rolls back to the backup if it does not.
+# Works from Git Bash on Windows as well as Linux/macOS: it needs ssh and tar,
+# not rsync. The live dashboard keeps serving the old build until the new one
+# has built and passed the test suite on the server; then the two build
+# directories are swapped and the service restarted. A failed build or test
+# never touches the running service. A failed health check after the restart
+# puts the previous build and source back and restarts again.
 #
-#   ./scripts/deploy.sh                  # deploy changed files, restart, verify
-#   ./scripts/deploy.sh --dry-run        # show what would be sent, send nothing
-#   ./scripts/deploy.sh --prune          # also delete server files no longer in the repo
-#   ./scripts/deploy.sh --force-restart  # restart even if nothing changed
-#   ./scripts/deploy.sh --rollback       # restore the most recent backup
-#   ./scripts/deploy.sh --list-backups
-#
-# Runs from Git Bash on Windows or from any Linux/WSL shell. It needs only
-# ssh + tar + sha256sum, all of which Git Bash already ships — deliberately no
-# rsync dependency, because rsync is not present on this workstation.
-#
-# Use key-based SSH auth. The script opens three SSH connections (manifest,
-# upload, and — for --list-backups — a listing), so password auth means typing
-# the password more than once.
-#
-# WHAT GETS SENT
-#   `git ls-files --cached --others --exclude-standard`, i.e. every tracked
-#   file plus new files that are not gitignored. That means .env, var/, .venv/
-#   and Home-Network-README.md are excluded by the same rules that keep them
-#   out of the repository — the server's secrets and runtime state are never
-#   touched by a deploy.
-#
-set -uo pipefail
+# Environment:
+#   STREAMANATOR_SSH          ssh target            (default arm@streamanator)
+#   STREAMANATOR_SSH_OPTS     extra ssh options     e.g. "-i ~/.ssh/key -o IdentitiesOnly=yes"
+#   STREAMANATOR_REMOTE_DIR   project dir on server (default /home/arm/projects/streamanator_dashboard)
+#   STREAMANATOR_SERVICE      systemd unit          (default streamanator-dashboard)
+#   STREAMANATOR_SYSTEMCTL    how to drive it       (default "sudo -n systemctl"; "systemctl --user" for a user unit)
+#   DASHBOARD_PORT            port to health-check  (default 8600)
+#   STREAMANATOR_NODE_BIN     node on the server    (default /home/arm/.local/node-current/bin)
+set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Configuration (override with flags or environment)
-# ---------------------------------------------------------------------------
-
-SSH_TARGET="${DEPLOY_HOST:-arm@10.0.40.100}"
-REMOTE_DIR="${DEPLOY_DIR:-/home/arm/projects/streamanator_dashboard}"
-SERVICE_NAME="${SERVICE_NAME:-streamanator-dashboard}"
+SSH_TARGET="${STREAMANATOR_SSH:-arm@streamanator}"
+read -r -a SSH_OPTS <<< "${STREAMANATOR_SSH_OPTS:-}"
+REMOTE_DIR="${STREAMANATOR_REMOTE_DIR:-/home/arm/projects/streamanator_dashboard}"
+SERVICE="${STREAMANATOR_SERVICE:-streamanator-dashboard}"
+SYSTEMCTL="${STREAMANATOR_SYSTEMCTL:-sudo -n systemctl}"
 PORT="${DASHBOARD_PORT:-8600}"
-KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
-SSH_OPTS="${SSH_OPTS:-}"
-
+NODE_BIN="${STREAMANATOR_NODE_BIN:-/home/arm/.local/node-current/bin}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=false
-PRUNE=false
-FORCE_RESTART=false
-NO_RESTART=false
-MODE=deploy
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
-info()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
-warn()  { printf '\033[33m!!!\033[0m %s\n' "$*"; }
-fail()  { printf '\033[31mERR\033[0m %s\n' "$*" >&2; exit 1; }
+cd "$ROOT"
+[[ -f web/package-lock.json ]] || { echo "web/package-lock.json is missing" >&2; exit 1; }
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --dry-run)       DRY_RUN=true ;;
-        --prune)         PRUNE=true ;;
-        --force-restart) FORCE_RESTART=true ;;
-        --no-restart)    NO_RESTART=true ;;
-        --rollback)      MODE=rollback ;;
-        --list-backups)  MODE=list-backups ;;
-        --host)          SSH_TARGET="$2"; shift ;;
-        --dir)           REMOTE_DIR="$2"; shift ;;
-        --port)          PORT="$2"; shift ;;
-        -h|--help)       sed -n '2,30p' "$0"; exit 0 ;;
-        *)               fail "unknown option: $1 (try --help)" ;;
-    esac
-    shift
+# What ships: tracked and untracked-but-not-ignored files that exist. .env,
+# var/, node_modules and build output are gitignored, so they never leave here.
+MANIFEST="$(mktemp)"
+trap 'rm -f "$MANIFEST"' EXIT
+git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' f; do
+  [[ -f "$f" ]] && printf '%s\n' "$f"
+done > "$MANIFEST"
+grep -qx ".env" "$MANIFEST" && { echo "Refusing to deploy: .env is not gitignored." >&2; exit 1; }
+
+if $DRY_RUN; then
+  cat "$MANIFEST"
+  echo "$(wc -l < "$MANIFEST") files would be shipped to $SSH_TARGET:$REMOTE_DIR" >&2
+  exit 0
+fi
+
+echo "Validating locally (tests, typecheck)..."
+(cd web && npm run -s test 2>&1 | grep -E "^not ok|^# (pass|fail)" && npm run -s typecheck)
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+echo "Shipping $(wc -l < "$MANIFEST") files as release $STAMP..."
+tar -czf - -T "$MANIFEST" \
+  | ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "mkdir -p '$REMOTE_DIR/var/deploy' && cat > '$REMOTE_DIR/var/deploy/$STAMP.tar.gz'"
+ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "cat > '$REMOTE_DIR/var/deploy/$STAMP.manifest'" < "$MANIFEST"
+
+# ssh joins its arguments into one string for the remote shell, so each one
+# is quoted here or "systemctl --user" would arrive as two.
+ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "bash -s -- $(printf '%q ' "$REMOTE_DIR" "$STAMP" "$SERVICE" "$PORT" "$NODE_BIN" "$SYSTEMCTL")" <<'REMOTE'
+set -euo pipefail
+REMOTE_DIR="$1" STAMP="$2" SERVICE="$3" PORT="$4" NODE_BIN="$5"
+read -r -a SYSTEMCTL <<< "$6"
+export PATH="$NODE_BIN:$PATH"
+cd "$REMOTE_DIR"
+D=var/deploy
+NEW_MANIFEST="$D/$STAMP.manifest"
+OLD_MANIFEST="$D/current.manifest"
+BACKUP="$D/backup-$STAMP.tar.gz"
+
+safe_path() { [[ -n "$1" && "$1" != /* && "$1" != *..* && "$1" != .env && "$1" != var/* && "$1" != .git/* ]]; }
+
+# Files the new release no longer has. Without a previous manifest (first
+# deploy with this script) nothing is pruned.
+removed_files() { [[ -f "$OLD_MANIFEST" ]] && comm -23 <(sort "$OLD_MANIFEST") <(sort "$NEW_MANIFEST") || true; }
+added_files() { [[ -f "$OLD_MANIFEST" ]] && comm -13 <(sort "$OLD_MANIFEST") <(sort "$NEW_MANIFEST") || true; }
+
+echo "[server] Backing up current source..."
+tar -czf "$BACKUP" --exclude=./.git --exclude=./.env --exclude=./var --exclude=./web/node_modules \
+  --exclude=./web/.next --exclude=./web/.next-build --exclude=./web/.next-prev --exclude=./web/.npm-cache \
+  --exclude=./next_app --exclude='*.tar.gz' --exclude='*.zip' .
+OLD_LOCK="$(sha256sum web/package-lock.json | cut -d' ' -f1)"
+
+restore_source() {
+  echo "[server] Restoring previous source from $BACKUP..."
+  added_files | while IFS= read -r f; do if safe_path "$f"; then rm -f -- "$f"; fi; done
+  tar -xzf "$BACKUP"
+  if [[ "$(sha256sum web/package-lock.json | cut -d' ' -f1)" != "$NEW_LOCK" ]]; then
+    (cd web && npm ci --no-audit --no-fund >/dev/null)
+  fi
+}
+
+echo "[server] Unpacking release..."
+tar -xzf "$D/$STAMP.tar.gz"
+removed_files | while IFS= read -r f; do if safe_path "$f"; then rm -f -- "$f"; fi; done
+NEW_LOCK="$(sha256sum web/package-lock.json | cut -d' ' -f1)"
+
+cd web
+if [[ "$NEW_LOCK" != "$OLD_LOCK" ]]; then
+  echo "[server] Dependencies changed; npm ci..."
+  npm ci --no-audit --no-fund >/dev/null
+fi
+
+echo "[server] Building into .next-build (the live build keeps serving)..."
+rm -rf .next-build
+if ! NEXT_DIST_DIR=.next-build npm run -s build > "../$D/build-$STAMP.log" 2>&1; then
+  tail -30 "../$D/build-$STAMP.log" >&2
+  echo "[server] Build failed; the running service was not touched." >&2
+  rm -rf .next-build; cd ..; restore_source; exit 1
+fi
+
+echo "[server] Running tests..."
+if ! npm run -s test > "../$D/test-$STAMP.log" 2>&1; then
+  grep -E "^not ok|^# (pass|fail)" "../$D/test-$STAMP.log" >&2 || tail -30 "../$D/test-$STAMP.log" >&2
+  echo "[server] Tests failed; the running service was not touched." >&2
+  rm -rf .next-build; cd ..; restore_source; exit 1
+fi
+
+rollback() {
+  echo "[server] $1; rolling back." >&2
+  rm -rf .next-failed; mv .next .next-failed
+  if [[ -d .next-prev ]]; then mv .next-prev .next; fi
+  cd ..; restore_source
+  "${SYSTEMCTL[@]}" restart "$SERVICE" || echo "[server] Restart after rollback ALSO failed; check the service by hand." >&2
+  echo "[server] Previous build restored. The failed build is in web/.next-failed." >&2
+  exit 1
+}
+
+echo "[server] Swapping builds and restarting $SERVICE..."
+NEW_ID="$(cat .next-build/BUILD_ID)"
+rm -rf .next-prev
+if [[ -d .next ]]; then mv .next .next-prev; fi
+mv .next-build .next
+"${SYSTEMCTL[@]}" restart "$SERVICE" || rollback "Restart failed"
+
+# Healthy means the NEW build answering: the live stream's hello carries the build id.
+for _ in $(seq 1 45); do
+  health="$(curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/health" 2>/dev/null || true)"
+  hello="$(curl -sN --max-time 3 "http://127.0.0.1:$PORT/api/live" 2>/dev/null | head -c 20000 || true)"
+  if [[ "$health" == *'"ok":true'* && "$hello" == *"\"buildId\":\"$NEW_ID\""* ]]; then
+    cd ..
+    cp "$NEW_MANIFEST" "$OLD_MANIFEST"
+    # Keep the last three backups and release archives; the root fs is not large.
+    ls -1t $D/backup-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+    ls -1t $D/2*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+    ls -1t $D/2*.manifest $D/build-*.log $D/test-*.log 2>/dev/null | tail -n +10 | xargs -r rm -f
+    echo "[server] Healthy on build $NEW_ID."
+    exit 0
+  fi
+  sleep 1
 done
-
-# shellcheck disable=SC2086  # SSH_OPTS is intentionally word-split
-ssh_run() { ssh $SSH_OPTS "$SSH_TARGET" "$@"; }
-
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT" || fail "cannot enter repository root"
-[[ -f app.py ]] || fail "app.py not found in ${REPO_ROOT} — wrong directory?"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
-# ---------------------------------------------------------------------------
-# Simple remote-only modes
-# ---------------------------------------------------------------------------
-
-if [[ "$MODE" == "list-backups" ]]; then
-    info "Backups on ${SSH_TARGET}:${REMOTE_DIR}/var/deploy-backups"
-    ssh_run "ls -lh '${REMOTE_DIR}/var/deploy-backups' 2>/dev/null || echo '(none yet)'"
-    exit $?
-fi
-
-# ---------------------------------------------------------------------------
-# Local manifest
-#
-# Hash every deployable file. sha256sum in Git Bash hashes in binary mode, so
-# the digests match the server's byte-for-byte as long as the working tree is
-# LF (core.autocrlf is false in this repo — do not turn it on, or every file
-# would look changed on every deploy and would land on Linux with CRLF).
-# ---------------------------------------------------------------------------
-
-# Normalise `HASH  path` / `HASH *path` to HASH<TAB>path so awk can split on a
-# tab and paths containing spaces survive.
-normalise='s/^\([0-9a-f]\{64\}\)[ *]\{1,2\}/\1\t/'
-
-if [[ "$MODE" == "deploy" ]]; then
-    git ls-files --cached --others --exclude-standard -z > "$TMP/files.z" \
-        || fail "git ls-files failed (is this a git repository?)"
-    [[ -s "$TMP/files.z" ]] || fail "no deployable files found"
-
-    xargs -0 sha256sum < "$TMP/files.z" | sed "$normalise" | sort -t $'\t' -k2 \
-        > "$TMP/local.man"
-    tr '\0' '\n' < "$TMP/files.z" | sort > "$TMP/local.list"
-    info "Local files: $(wc -l < "$TMP/local.man" | tr -d ' ')"
-fi
-
-# ---------------------------------------------------------------------------
-# Remote manifest
-#
-# One SSH round trip: confirm the project directory, hash the remote tree with
-# the same exclusions git applies, and report how the service is managed.
-# ---------------------------------------------------------------------------
-
-REMOTE_PROBE=$(cat <<EOF
-set -u
-cd '${REMOTE_DIR}' 2>/dev/null || { echo "MISSING_DIR"; exit 0; }
-echo "OK_DIR"
-if systemctl cat '${SERVICE_NAME}.service' >/dev/null 2>&1; then
-    echo "MANAGED systemd"
-elif [ -x scripts/restart-dev.sh ]; then
-    echo "MANAGED script"
-else
-    echo "MANAGED none"
-fi
-[ -x .venv/bin/python ] && echo "VENV yes" || echo "VENV no"
-echo "MANIFEST"
-find . -type f \\
-    -not -path './.venv*' -not -path './var/*' -not -path './.git/*' \\
-    -not -path '*/__pycache__/*' -not -path './.pytest_cache/*' \\
-    -not -path './.ruff_cache/*' -not -path './.mypy_cache/*' \\
-    -not -name '*.pyc' -not -name '*.log' \\
-    -not -name '.env' -not -name '.env.bak*' \\
-    -not -name '*.pem' -not -name '*.crt' -not -name '*.key' \\
-    -not -name '*.sqlite3*' -not -name 'secrets.toml' \\
-    -not -name 'Home-Network-README.md' \\
-    -print0 | xargs -0 -r sha256sum
-EOF
-)
-
-info "Reading server state from ${SSH_TARGET}:${REMOTE_DIR}"
-ssh_run "bash -s" <<< "$REMOTE_PROBE" > "$TMP/probe.out" \
-    || fail "SSH to ${SSH_TARGET} failed"
-
-grep -q '^OK_DIR$' "$TMP/probe.out" \
-    || fail "${REMOTE_DIR} does not exist on ${SSH_TARGET} — run scripts/install.sh there first"
-
-MANAGED=$(awk '/^MANAGED /{print $2}' "$TMP/probe.out")
-HAS_VENV=$(awk '/^VENV /{print $2}' "$TMP/probe.out")
-# `find .` yields ./-prefixed paths; strip that so the keys match the local
-# manifest's repo-relative ones.
-sed -n '/^MANIFEST$/,$p' "$TMP/probe.out" | tail -n +2 \
-    | sed -e "$normalise" -e 's|\t\./|\t|' | sort -t $'\t' -k2 > "$TMP/remote.man"
-
-info "Service management: ${MANAGED}   venv: ${HAS_VENV}   remote files: $(wc -l < "$TMP/remote.man" | tr -d ' ')"
-[[ "$MANAGED" == "none" ]] && warn "no systemd unit and no scripts/restart-dev.sh on the server — cannot restart"
-
-# ---------------------------------------------------------------------------
-# Rollback mode short-circuits the diff entirely
-# ---------------------------------------------------------------------------
-
-if [[ "$MODE" == "rollback" ]]; then
-    CHANGED_COUNT=0
-    : > "$TMP/changed.list"
-    : > "$TMP/deletions.list"
-else
-    # New or modified: present locally with a different (or absent) remote hash.
-    awk -F '\t' 'NR==FNR { r[$2]=$1; next }
-                 !($2 in r) || r[$2] != $1 { print $2 }' \
-        "$TMP/remote.man" "$TMP/local.man" | sort > "$TMP/changed.list"
-
-    # Present on the server, gone from the repo. Never a candidate for deletion
-    # unless --prune is given, and never anything under var/ or .venv/.
-    awk -F '\t' 'NR==FNR { l[$0]=1; next } !($2 in l) { print $2 }' \
-        "$TMP/local.list" "$TMP/remote.man" \
-        | grep -v -E '^(var/|\.venv|\.env($|\.))' | sort > "$TMP/deletions.list"
-
-    CHANGED_COUNT=$(wc -l < "$TMP/changed.list" | tr -d ' ')
-    DELETE_COUNT=$(wc -l < "$TMP/deletions.list" | tr -d ' ')
-
-    if [[ "$CHANGED_COUNT" -eq 0 ]]; then
-        info "No file differs from the server."
-    else
-        info "${CHANGED_COUNT} file(s) to send:"
-        sed 's/^/      /' "$TMP/changed.list"
-    fi
-
-    if [[ "$DELETE_COUNT" -gt 0 ]]; then
-        if $PRUNE; then
-            warn "${DELETE_COUNT} file(s) will be DELETED on the server:"
-        else
-            warn "${DELETE_COUNT} file(s) exist on the server but not in the repo (use --prune to remove):"
-            : > "$TMP/deletions.list"
-        fi
-        sed 's/^/      /' "$TMP/deletions.list" 2>/dev/null
-    fi
-
-    if $DRY_RUN; then
-        info "Dry run — nothing sent."
-        exit 0
-    fi
-
-    if [[ "$CHANGED_COUNT" -eq 0 && "$DELETE_COUNT" -eq 0 ]] && ! $FORCE_RESTART; then
-        info "Nothing to do. Use --force-restart to restart anyway."
-        exit 0
-    fi
-fi
-
-RESTART=true
-$NO_RESTART && RESTART=false
-
-# ---------------------------------------------------------------------------
-# The remote half.
-#
-# Backup first, then apply, then restart, then verify — and if the verify
-# fails, put the backup back and restart again. The dashboard is never left in
-# a state where a bad deploy is running unverified.
-# ---------------------------------------------------------------------------
-
-cat > "$TMP/apply.sh" <<'APPLY'
-#!/usr/bin/env bash
-set -uo pipefail
-STAGE="$1"
-. "$STAGE/deploy.env"
-
-info()  { printf '\033[36m  ->\033[0m %s\n' "$*"; }
-warn()  { printf '\033[33m  !!\033[0m %s\n' "$*"; }
-fail()  { printf '\033[31m  ERR\033[0m %s\n' "$*" >&2; exit 1; }
-
-cd "$REMOTE_DIR" || fail "cannot enter $REMOTE_DIR"
-
-BACKUP_DIR="var/deploy-backups"
-mkdir -p "$BACKUP_DIR"
-
-TAR_EXCLUDES=(
-    '--exclude=./.venv*' '--exclude=./var' '--exclude=./.git'
-    '--exclude=__pycache__' '--exclude=./.pytest_cache'
-    '--exclude=./.ruff_cache' '--exclude=./.mypy_cache'
-    '--exclude=./.env' '--exclude=*.pyc' '--exclude=*.log'
-)
-
-restart_service() {
-    if [ "$MANAGED" = "systemd" ]; then
-        info "systemctl restart $SERVICE_NAME"
-        sudo systemctl restart "$SERVICE_NAME" || return 1
-    elif [ "$MANAGED" = "script" ]; then
-        info "scripts/restart-dev.sh"
-        ./scripts/restart-dev.sh || return 1
-    else
-        warn "no restart mechanism available — skipping restart"
-    fi
-    return 0
-}
-
-# Streamlit's health endpoint answers as soon as the server loop is up, which
-# is the earliest honest signal that the app imported cleanly.
-health_check() {
-    local i code
-    for i in $(seq 1 30); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
-            "http://127.0.0.1:${PORT}/_stcore/health" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            info "health check OK after ${i}s (http $code)"
-            return 0
-        fi
-        sleep 1
-    done
-    warn "health check FAILED — no 200 from 127.0.0.1:${PORT}/_stcore/health after 30s"
-    return 1
-}
-
-show_logs() {
-    if [ "$MANAGED" = "systemd" ]; then
-        journalctl -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null
-    else
-        tail -30 var/dashboard.log 2>/dev/null
-    fi
-}
-
-# --- Rollback ---------------------------------------------------------------
-
-if [ "$MODE" = "rollback" ]; then
-    LATEST=$(ls -1t "$BACKUP_DIR"/*.tar.gz 2>/dev/null | head -1)
-    [ -n "$LATEST" ] || fail "no backup found in $REMOTE_DIR/$BACKUP_DIR"
-    info "restoring $LATEST"
-    tar xzf "$LATEST" -C . || fail "restore failed"
-    find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
-        | xargs -0 -r rm -rf
-    restart_service || fail "restart failed after rollback"
-    health_check || { show_logs; fail "service unhealthy after rollback"; }
-    info "rollback complete"
-    exit 0
-fi
-
-# --- Backup -----------------------------------------------------------------
-
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-BACKUP="$BACKUP_DIR/$STAMP.tar.gz"
-info "backing up current tree to $BACKUP"
-tar czf "$BACKUP" "${TAR_EXCLUDES[@]}" . 2>/dev/null \
-    || fail "backup failed — refusing to deploy over an unbacked-up tree"
-
-# Keep the last N; a backup is ~1 MB, but this directory would otherwise grow
-# forever on a host whose whole point is watching disks fill up.
-ls -1t "$BACKUP_DIR"/*.tar.gz 2>/dev/null | tail -n "+$((KEEP_BACKUPS + 1))" \
-    | xargs -r rm -f
-
-# --- Apply ------------------------------------------------------------------
-
-if [ -d "$STAGE/payload" ]; then
-    info "applying changed files"
-    cp -a "$STAGE/payload/." . || fail "copy failed"
-fi
-
-if [ -s "$STAGE/deletions.list" ]; then
-    info "pruning removed files"
-    while IFS= read -r f; do
-        case "$f" in
-            ''|.env|var/*|.venv*|../*|/*) warn "skipping $f"; continue ;;
-        esac
-        rm -f -- "$f" && echo "     deleted $f"
-    done < "$STAGE/deletions.list"
-    # Drop directories the prune emptied, but never the project root and never
-    # anything git, the venv or the runtime state owns.
-    find . -mindepth 1 -type d -empty \
-        -not -path './.venv*' \
-        -not -path './var' -not -path './var/*' \
-        -not -path './.git' -not -path './.git/*' \
-        -delete 2>/dev/null
-fi
-
-# Bytecode caches are keyed on source mtime, and a deployed file carries its
-# mtime from the workstation — which can be older than the .pyc the server
-# already built. Clearing them removes any chance of running stale code.
-find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
-    | xargs -0 -r rm -rf
-
-if [ "$DEPS_CHANGED" = "true" ]; then
-    if [ -x .venv/bin/pip ]; then
-        info "requirements.txt changed — installing dependencies"
-        .venv/bin/pip install --quiet -r requirements.txt \
-            || warn "pip install reported errors"
-    else
-        warn "requirements.txt changed but .venv is missing — dependencies NOT installed"
-    fi
-fi
-
-# --- Restart and verify -----------------------------------------------------
-
-if [ "$RESTART" != "true" ]; then
-    info "restart skipped (--no-restart). Changes are on disk but not live."
-    exit 0
-fi
-
-if restart_service && health_check; then
-    info "deploy OK"
-    exit 0
-fi
-
-warn "deploy failed verification — rolling back to $BACKUP"
-show_logs
-tar xzf "$BACKUP" -C . || fail "ROLLBACK FAILED — server left in a bad state, backup: $BACKUP"
-find . -name '.venv*' -prune -o -name __pycache__ -type d -print0 2>/dev/null \
-    | xargs -0 -r rm -rf
-restart_service
-if health_check; then
-    fail "deploy rolled back; the previous version is running again"
-fi
-fail "ROLLBACK RESTART UNHEALTHY — investigate on the host. Backup: $REMOTE_DIR/$BACKUP"
-APPLY
-
-DEPS_CHANGED=false
-grep -qx 'requirements.txt' "$TMP/changed.list" 2>/dev/null && DEPS_CHANGED=true
-
-cat > "$TMP/deploy.env" <<EOF
-REMOTE_DIR='${REMOTE_DIR}'
-SERVICE_NAME='${SERVICE_NAME}'
-PORT='${PORT}'
-MANAGED='${MANAGED}'
-MODE='${MODE}'
-RESTART='${RESTART}'
-DEPS_CHANGED='${DEPS_CHANGED}'
-KEEP_BACKUPS='${KEEP_BACKUPS}'
-EOF
-
-[[ -f "$TMP/deletions.list" ]] || : > "$TMP/deletions.list"
-
-# The payload carries the apply script with it, so the whole remote half is one
-# SSH connection: the command comes from argv, the archive from stdin.
-tar -cf "$TMP/payload.tar" -C "$TMP" apply.sh deploy.env deletions.list \
-    || fail "could not build payload"
-if [[ -s "$TMP/changed.list" ]]; then
-    tar -rf "$TMP/payload.tar" --transform='s,^,payload/,' \
-        -T "$TMP/changed.list" || fail "could not add changed files to payload"
-fi
-gzip -f "$TMP/payload.tar"
-
-info "Uploading $(du -h "$TMP/payload.tar.gz" | cut -f1 | tr -d ' ') to ${SSH_TARGET}"
-
-ssh_run 'set -e
-d=$(mktemp -d /tmp/streamanator-deploy.XXXXXX)
-tar xzf - -C "$d"
-set +e
-bash "$d/apply.sh" "$d"
-rc=$?
-rm -rf "$d"
-exit $rc' < "$TMP/payload.tar.gz"
-
-RC=$?
-if [[ $RC -eq 0 ]]; then
-    info "Done. http://${SSH_TARGET#*@}:${PORT}"
-else
-    fail "Deploy failed (exit ${RC}). Roll back with: ./scripts/deploy.sh --rollback"
-fi
+if [[ " ${SYSTEMCTL[*]} " == *" --user "* ]]; then journalctl --user-unit "$SERVICE" -n 20 --no-pager >&2 || true; else journalctl -u "$SERVICE" -n 20 --no-pager >&2 || true; fi
+rollback "Health check failed after restart"
+REMOTE
+echo "Deploy complete."

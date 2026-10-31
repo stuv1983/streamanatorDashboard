@@ -97,6 +97,10 @@ The bundled Prometheus config puts cAdvisor on **9101** to avoid the collision.
 
 ## 3. Sports Data Lab runs on port 6969, not 8501
 
+> **31 Oct 2026:** Sports Data Lab is retired and no longer monitored. The
+> sections below that mention it are kept as the historical survey record. The
+> root-escalating sudoers grant in section 13 should be removed along with it.
+
 The README records port 8501 and a tmux-managed session. Live:
 
 ```

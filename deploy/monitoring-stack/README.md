@@ -73,8 +73,7 @@ set `GRAFANA_BROWSER_URL` to the proxy URL while keeping `GRAFANA_URL` on
 ## Probe targets
 
 `blackbox.yml` and `prometheus.yml` carry the live-verified endpoints from the
-survey — note that Sports Data Lab is on **6969**, not 8501 (that's AquaLog),
-and Plex/SABnzbd/qBittorrent use a TCP-connect probe because they do not answer
+survey — Plex/SABnzbd/qBittorrent use a TCP-connect probe because they do not answer
 200 to an unauthenticated GET. Edit `prometheus.yml` to add or remove targets,
 then reload without a full restart:
 
