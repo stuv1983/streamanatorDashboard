@@ -2,6 +2,7 @@ import * as dns from 'dns/promises';
 import * as net from 'net';
 import * as tls from 'tls';
 import { performance } from 'perf_hooks';
+import { Agent } from 'undici';
 
 export interface ProbeResult {
     key: string;
@@ -19,6 +20,9 @@ export interface ProbeResult {
     source: string;
     tls_days_remaining?: number | null;
 }
+
+// Shared so unverified probes reuse one connection pool.
+let insecureDispatcher: Agent | undefined;
 
 export async function probeHttp(
     key: string,
@@ -111,14 +115,17 @@ export async function probeHttp(
     let status_code: number | null = null;
     const httpStart = performance.now();
     try {
-        // NOTE: Native fetch does not natively support disabling verify_tls without custom undici dispatchers.
-        const response = await fetch(url, {
+        const request: RequestInit & { dispatcher?: Agent } = {
             signal: AbortSignal.timeout(timeoutSecs * 1000),
             redirect: 'manual', // match allow_redirects=False
             headers: {
                 "User-Agent": "streamanator-dashboard/1.0 (health probe)"
             }
-        });
+        };
+        if (!verify_tls && scheme === "https:") {
+            request.dispatcher = insecureDispatcher ??= new Agent({ connect: { rejectUnauthorized: false } });
+        }
+        const response = await fetch(url, request);
         latency_ms = performance.now() - httpStart;
         status_code = response.status;
     } catch (exc: any) {

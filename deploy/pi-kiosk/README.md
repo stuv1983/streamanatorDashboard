@@ -1,7 +1,8 @@
 # Raspberry Pi wall kiosk
 
-`install.sh` turns a Raspberry Pi into an always-on screen that shows the
-streamanator `/wall` page full screen in Chromium. It starts with the desktop,
+`install.sh` turns a Raspberry Pi into an always-on screen that shows a
+streamanator page full screen in Chromium: the `/hub` home display or the
+`/wall` server status. It starts with the desktop,
 waits for the dashboard server, and relaunches Chromium if it ever exits.
 
 ## Prerequisites
@@ -47,6 +48,36 @@ recent run's flags win, so always pass the full set you want.
 | `--help` | Usage. |
 
 Example: `bash install.sh --night-off 23:30-06:45 --rotate 90`
+
+## Home hub
+
+To show the family display instead of the server wall:
+
+```bash
+bash install.sh --url http://10.0.40.100:8600/hub --night-off 23:00-06:00
+```
+
+Night handling has two levels. `HUB_NIGHT` (Admin → Home & hub) dims the page
+to a faint clock and the next event, so the screen still tells the time from bed.
+`--night-off` powers the panel off. Use either or both: for example
+`HUB_NIGHT=21:30-23:00` and `--night-off 23:00-06:00`.
+
+The layout follows the screen: three columns in landscape, stacked in portrait
+(`--rotate 90` for a screen mounted on its side). Tap the clock to show photos
+only; tap it again, or wait 10 minutes, to bring the calendar back.
+
+### Touchscreens
+
+Any USB or DSI touchscreen that Raspberry Pi OS recognises works without
+further setup: Chromium treats touches as clicks, and the installer already
+disables pinch-zoom and swipe-back. The hub's buttons and list rows are at
+least 44 px high.
+
+To type new list items on the screen itself, turn on the on-screen keyboard:
+Raspberry Pi Configuration → Display → On-screen Keyboard (Bookworm/Trixie,
+Wayland). On the older X11 desktop, `sudo apt install onboard` instead. Items
+can also be added from a phone at `http://10.0.40.100:8600/hub` on the home
+Wi-Fi.
 
 ## How it works
 

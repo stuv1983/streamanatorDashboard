@@ -15,7 +15,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runCommand } from './system';
-import { IntegrityResult, verifySqlite } from './sportsdb';
+import Database from 'better-sqlite3';
+
+export interface IntegrityResult {
+    ok: boolean;
+    detail: string;
+    method: string;
+    duration_seconds: number;
+    checked_at: number;
+}
 
 function fnmatch(name: string, pattern: string): boolean {
     const regexPattern = pattern
@@ -432,6 +440,37 @@ export async function verifyTarListing(
         duration_seconds: durationSeconds,
         checked_at: Date.now() / 1000
     };
+}
+
+export function verifySqlite(dbPath: string): IntegrityResult {
+    const start = performance.now();
+    try {
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        db.pragma('busy_timeout = 30000');
+        
+        const row = db.pragma('integrity_check', { simple: true });
+        db.close();
+
+        const durationSeconds = (performance.now() - start) / 1000;
+        const ok = row === 'ok';
+
+        return {
+            ok,
+            detail: ok ? 'ok' : String(row),
+            method: 'PRAGMA integrity_check',
+            duration_seconds: durationSeconds,
+            checked_at: Date.now() / 1000
+        };
+    } catch (err: any) {
+        const durationSeconds = (performance.now() - start) / 1000;
+        return {
+            ok: false,
+            detail: err.message,
+            method: 'PRAGMA integrity_check',
+            duration_seconds: durationSeconds,
+            checked_at: Date.now() / 1000
+        };
+    }
 }
 
 export async function verifyBackup(

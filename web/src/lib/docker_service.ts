@@ -14,6 +14,8 @@ export class DockerUnavailable extends Error {
 }
 
 export class ContainerInfo {
+    /** Full container id; changes whenever the container is recreated. */
+    id: string;
     name: string;
     image: string;
     /** The image's declared version label, when the image publishes one. */
@@ -33,8 +35,11 @@ export class ContainerInfo {
     image_id: string;
     /** When this container object was created */
     created_at: number | null;
+    /** Non-secret environment settings (see PUBLIC_ENV_KEYS); everything else is dropped. */
+    public_env: Record<string, string>;
 
     constructor(init: Partial<ContainerInfo>) {
+        this.id = init.id ?? "";
         this.name = init.name ?? "";
         this.image = init.image ?? "";
         this.version = init.version ?? "";
@@ -50,6 +55,7 @@ export class ContainerInfo {
         this.network_mode = init.network_mode ?? "";
         this.image_id = init.image_id ?? "";
         this.created_at = init.created_at ?? null;
+        this.public_env = init.public_env ?? {};
     }
 
     get running(): boolean {
@@ -76,6 +82,17 @@ export class ContainerInfo {
         }
         return null;
     }
+
+    /** Getters are not own properties, so JSON.stringify would drop them from the snapshot. */
+    toJSON() {
+        return {
+            ...this,
+            running: this.running,
+            healthy: this.healthy,
+            uptime_seconds: this.uptime_seconds,
+            behind_container: this.behind_container,
+        };
+    }
 }
 
 function _parse_docker_time(value: string | null | undefined): number | null {
@@ -87,6 +104,37 @@ function _parse_docker_time(value: string | null | undefined): number | null {
         return null;
     }
     return parsed / 1000.0;
+}
+
+/**
+ * Environment variables safe to carry into a snapshot. `docker inspect` returns
+ * every variable, credentials included, so this is an allow-list: Gluetun's
+ * provider, tunnel type and server filters explain most tunnel failures, and
+ * none of them is a secret.
+ */
+export const PUBLIC_ENV_KEYS = new Set([
+    "VPN_SERVICE_PROVIDER",
+    "VPN_TYPE",
+    "SERVER_COUNTRIES",
+    "SERVER_REGIONS",
+    "SERVER_CITIES",
+    "SERVER_HOSTNAMES",
+    "SERVER_CATEGORIES",
+    "VPN_PORT_FORWARDING",
+    "HTTP_CONTROL_SERVER_ADDRESS",
+]);
+
+export function _parse_public_env(env: string[] | null | undefined): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const entry of env ?? []) {
+        const idx = entry.indexOf("=");
+        if (idx <= 0) continue;
+        const key = entry.substring(0, idx);
+        if (PUBLIC_ENV_KEYS.has(key)) {
+            result[key] = entry.substring(idx + 1);
+        }
+    }
+    return result;
 }
 
 function _parse_ports(port_bindings: Record<string, any[]> | null | undefined): Record<string, string> {
@@ -164,6 +212,7 @@ export async function list_containers(timeout: number = 8.0): Promise<ContainerI
         const health_block = state.Health;
 
         containers.push(new ContainerInfo({
+            id: item.Id || "",
             name: (item.Name || "").replace(/^\//, ""),
             image: config.Image || item.Image || "",
             version: labels["org.opencontainers.image.version"] || "",
@@ -178,7 +227,8 @@ export async function list_containers(timeout: number = 8.0): Promise<ContainerI
             labels: labels,
             network_mode: host_config.NetworkMode || "",
             image_id: item.Image || "",
-            created_at: _parse_docker_time(item.Created)
+            created_at: _parse_docker_time(item.Created),
+            public_env: _parse_public_env(config.Env)
         }));
     }
     return containers;

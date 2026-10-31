@@ -61,7 +61,6 @@ scrape_configs:
     static_configs:
       - targets:
           - http://10.0.40.100:2283/api/server/ping   # Immich
-          - http://10.0.40.100:6969/_stcore/health    # Sports Data Lab (NOT 8501)
           - http://10.0.40.100:8501/_stcore/health    # AquaLog
           - http://10.0.40.100:8081/ping              # Sonarr via gluetun
           - http://10.0.40.100:8082/ping              # Radarr via gluetun

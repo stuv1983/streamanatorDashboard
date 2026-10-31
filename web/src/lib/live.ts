@@ -205,7 +205,7 @@ function averageCpuMhz(): number | null {
   return count ? Math.round(total / count / 1000) : null;
 }
 
-function readBuildId(): string | null {
+export function readBuildId(): string | null {
   return read(path.join(process.cwd(), ".next", "BUILD_ID"))?.trim() ?? null;
 }
 

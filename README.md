@@ -2,7 +2,7 @@
 
 Streamanator is a self-hosted Next.js 16 and TypeScript dashboard for a Linux home server. The former Streamlit application has been retired; all UI, collectors, history, health scoring, alerts, admin configuration and background workers run in the Node.js application under `web/`.
 
-It has two jobs: a health overview that says what needs attention, and a Task Manager-depth live view of the host for when something does. A Raspberry Pi on the LAN can show the `/wall` page full-screen around the clock (see [deploy/pi-kiosk/README.md](deploy/pi-kiosk/README.md)).
+It has two jobs: a health overview that says what needs attention, and a Task Manager-depth live view of the host for when something does. A Raspberry Pi on the LAN can show the `/hub` home display (or the `/wall` server status) full-screen around the clock (see [deploy/pi-kiosk/README.md](deploy/pi-kiosk/README.md)).
 
 ## Monitored areas
 
@@ -11,7 +11,7 @@ It has two jobs: a health overview that says what needs attention, and a Task Ma
 - CPU, memory, load, uptime, temperatures and systemd failures
 - Internet, gateway, DNS, WAN address, interfaces and UniFi gateway/AP/switch/port/VLAN inventory
 - Docker containers, restart counts and VPN/leak state
-- Plex, Immich, AFLDB, download services, other application probes and sports databases
+- Plex, Immich, AFLDB, download services and other application probes
 - Backup freshness, missed schedules and in-progress jobs
 - Listening ports, declared exposure and UniFi IDS/IPS events
 - Alert/recovery email, weekly summaries and healthchecks heartbeat
@@ -29,6 +29,8 @@ A one-second sampler reads `/proc`, `/sys` and `nvidia-smi` directly and streams
 | `/services` | systemd units with state, CPU, memory, tasks and restarts; failed units; timers; error-priority journal entries from the last 24 hours. |
 | `/alerts` | Threshold rules evaluated on the live stream (for example CPU above 90 % for 5 minutes). Firing rules feed the health score, the wall and alert email. Editable from an Admin session. |
 | `/events` | What changed on the host: inventory differences, WAN changes and other recorded events, plus the admin audit log for signed-in admins. |
+| `/home` | Apps & media: a launcher tile for every monitored service with a live up/down dot, admin-edited bookmarks, a search box (apps, Sonarr/Radarr add-search, the web; press `/`), clock and Open-Meteo weather, Plex now playing, the SABnzbd and qBittorrent queues, the Sonarr/Radarr calendar and RSS headlines. Each widget says whether it is unconfigured, failing or idle. |
+| `/hub` | Home hub for a wall or kitchen screen: clock, weather (now, next 18 hours, 5 days, rain chance, UV, sunrise/sunset), a 7-day agenda merged from private iCal feeds (Google, iCloud, Outlook) plus Sonarr/Radarr releases, tap-to-tick To do and Shopping lists anyone at the screen can edit, countdowns, an Immich album slideshow behind it all, and one line of server health, Plex now playing and headlines. Night dimming, a photos-only mode (tap the clock), landscape and portrait layouts, and a reload after each deploy. Feed URLs and the Immich key never leave the server. |
 | `/inventory` | Packages, enabled units, containers (with image id), listening ports, login-capable accounts, kernel modules and fingerprints of security-relevant files, re-collected every six hours. New accounts, new listeners on all interfaces and changes to sshd/sudoers/authorized_keys are raised as warnings. |
 
 Every view distinguishes zero from missing data and shows the source used. SMART and UniFi exporter data are discovered through Prometheus when available; bounded local collectors and direct probes provide the remaining live data.
@@ -38,6 +40,14 @@ The dashboard runs unprivileged as `arm`. Without root the kernel hides the disk
 ### Process control
 
 Signed-in admins can end, kill, suspend/resume or reload a process and lower its priority from the Processes drawer. Each action asks for the admin password again, is checked against the process start time (so a recycled PID can't be hit) and is written to `var/audit.log`, refusals included. The dashboard refuses root's processes, other accounts' processes, PID 1, kernel threads, itself and its workers, core plumbing (sshd, systemd, dockerd, mdadm and similar) and anything inside a container (restart the container instead). Raising priority needs root and is refused. `ADMIN_ACTIONS_ENABLED=false` turns all of it off.
+
+### Home hub
+
+Set it up under Admin → Home & hub. `HUB_CALENDARS` takes `Name|#colour|ical-url` entries separated by `;` (Google: Settings → the calendar → "Secret address in iCal format"). Recurring events, exceptions, moved occurrences and Outlook's Windows time-zone names are expanded on the server; feeds are cached for 10 minutes and a failing feed keeps its last good copy and is named on screen. Lists are stored in `var/hub.json`; they can be changed from any browser on the LAN without signing in, so keep port 8600 internal. Photos need an Immich endpoint, an API key with `album.read` and `asset.view`, and album ids in `HUB_PHOTO_ALBUMS`; the dashboard proxies only photos from those albums.
+
+### Container control
+
+The Docker page gives signed-in admins start, stop and restart for each container, with the same password step-up and audit log. Requests carry the container id, so a container recreated since the page loaded is refused, and the confirmation names every container sharing the target's network namespace (stopping Gluetun takes the whole media stack offline). Pulling and recreating stay with the stack updater.
 
 ## Development
 

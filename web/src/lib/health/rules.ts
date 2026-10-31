@@ -541,9 +541,10 @@ export function classifyVpn(status: any): Verdict {
     }
 
     const location = status.location ? ` (${status.location})` : "";
+    const exit = publicIp ? `via ${publicIp}${location}` : "(exit IP lookup unavailable)";
     return {
         status: Status.HEALTHY,
-        detail: `${status.provider || 'VPN'} connected via ${publicIp}${location}.`,
+        detail: `${status.provider || 'VPN'} connected ${exit}.`,
         threshold: "",
     };
 }

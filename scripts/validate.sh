@@ -116,27 +116,27 @@ check_http() {
 }
 check_http "Plex"            "http://10.0.40.100:32400/identity"
 check_http "Immich"          "http://10.0.40.100:2283/api/server/ping"
-check_http "Sports Data Lab" "http://10.0.40.100:6969/_stcore/health"
 check_http "AquaLog"         "http://10.0.40.100:8501/_stcore/health"
 check_http "SABnzbd"         "http://10.0.40.100:8080"
 
 head "Backups"
-SPORTS_DIR=${SPORTS_BACKUP_DIR:-/mnt/media/sportsDBackUp}
-if [[ -d "$SPORTS_DIR" ]]; then
-  LATEST=$(find "$SPORTS_DIR" -maxdepth 1 -name '*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)
+NIGHTLY_DIR=${NIGHTLY_BACKUP_DIR:-/mnt/backup/nightly}
+if [[ -d "$NIGHTLY_DIR" ]]; then
+  LATEST=$(find "$NIGHTLY_DIR" -mindepth 1 -maxdepth 1 -printf '%T@ %p
+' 2>/dev/null | sort -rn | head -1)
   if [[ -z "$LATEST" ]]; then
-    bad "No backups found in $SPORTS_DIR"
+    bad "No backups found in $NIGHTLY_DIR"
   else
     TS=${LATEST%% *}
     AGE_DAYS=$(( ( $(date +%s) - ${TS%.*} ) / 86400 ))
-    if   [[ "$AGE_DAYS" -gt 7 ]]; then bad  "Latest sports backup is ${AGE_DAYS} days old"
-    elif [[ "$AGE_DAYS" -gt 4 ]]; then warn "Latest sports backup is ${AGE_DAYS} days old"
-    else                               ok   "Latest sports backup is ${AGE_DAYS} days old"
+    if   [[ "$AGE_DAYS" -gt 3 ]]; then bad  "Latest nightly backup is ${AGE_DAYS} days old"
+    elif [[ "$AGE_DAYS" -gt 1 ]]; then warn "Latest nightly backup is ${AGE_DAYS} days old"
+    else                               ok   "Latest nightly backup is ${AGE_DAYS} days old"
     fi
     echo "    $(basename "${LATEST#* }")"
   fi
 else
-  bad "Backup directory missing: $SPORTS_DIR"
+  bad "Backup directory missing: $NIGHTLY_DIR"
 fi
 
 head "systemd"

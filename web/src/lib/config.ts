@@ -243,6 +243,40 @@ export interface AppApiConfig {
   gluetun_api_key: string | null;
 }
 
+export interface HomeConfig {
+  /** Admin-edited bookmarks shown on /home beside the built-in service tiles. */
+  launcher_path: string;
+  weather_latitude: number | null;
+  weather_longitude: number | null;
+  weather_location: string;
+  rss_feeds: string[];
+  calendar_days: number;
+}
+
+export interface HubCalendar {
+  name: string;
+  /** CSS colour; empty takes the next palette slot. */
+  color: string;
+  /** Private feed URL (Google "secret address in iCal format", iCloud public link, Outlook ICS). Never sent to browsers. */
+  url: string;
+}
+
+export interface HubConfig {
+  title: string;
+  calendars: HubCalendar[];
+  include_media_calendar: boolean;
+  days: number;
+  lists: string[];
+  store_path: string;
+  immich_api_key: string | null;
+  photo_album_ids: string[];
+  photo_seconds: number;
+  /** "Name|YYYY-MM-DD" (one-off) or "Name|MM-DD" (every year), separated by ";". */
+  countdowns: string;
+  /** "HH:MM-HH:MM" during which the hub dims to a night clock; empty for never. */
+  night: string;
+}
+
 export interface VpnConfig {
   container: string;
   provider: string;
@@ -267,19 +301,11 @@ export interface BackupJob {
 
 export const WATCHED_UNITS = [
   "backup-nightly.service",
-  "sports-data-lab.service",
   "aqualog.service",
   "plexmediaserver.service",
   "docker.service",
   "mdmonitor.service",
 ];
-
-export interface SportsDatabase {
-  key: string;
-  display: string;
-  path: string;
-  max_age_hours: number;
-}
 
 export interface ExposedPort {
   port: number;
@@ -367,6 +393,8 @@ export interface Settings {
   local: LocalCollectorConfig;
   raid: RaidConfig;
   vpn: VpnConfig;
+  home: HomeConfig;
+  hub: HubConfig;
   api: AppApiConfig;
   updates: UpdatesConfig;
 
@@ -377,7 +405,6 @@ export interface Settings {
   stacks: ComposeStack[];
   endpoints: ServiceEndpoint[];
   backups: BackupJob[];
-  sports_databases: SportsDatabase[];
   external_ports: ExposedPort[];
   expected_listeners: Record<number, string>;
   default_refresh_seconds: number;
@@ -453,8 +480,8 @@ export function getSettings(): Settings {
 
   const vpn: VpnConfig = {
     container: envStr("GLUETUN_CONTAINER", "media-vpn_gluetun_1"),
-    provider: envStr("VPN_PROVIDER", "nordvpn"),
-    protocol: envStr("VPN_PROTOCOL", "openvpn"),
+    provider: envStr("VPN_PROVIDER", "protonvpn"),
+    protocol: envStr("VPN_PROTOCOL", "wireguard"),
     ip_check_url: envStr("VPN_IP_CHECK_URL", "https://ipinfo.io/json"),
     wan_ip_check_url: envStr("WAN_IP_CHECK_URL", "https://ipinfo.io/json"),
   };
@@ -495,6 +522,36 @@ export function getSettings(): Settings {
     require_auth_for_all: envBool("REQUIRE_AUTH_FOR_ALL", false),
     actions_enabled: envBool("ADMIN_ACTIONS_ENABLED", true),
     totp_issuer: envStr("ADMIN_TOTP_ISSUER", "Streamanator Dashboard"),
+  };
+
+  // Melbourne matches the default STREAMANATOR_TZ; WEATHER_LATITUDE=off hides the widget.
+  const weather_off = envStr("WEATHER_LATITUDE", "").toLowerCase() === "off";
+  const home: HomeConfig = {
+    launcher_path: envStr("LAUNCHER_PATH", "var/launcher.json"),
+    weather_latitude: weather_off ? null : envFloat("WEATHER_LATITUDE", -37.8136),
+    weather_longitude: weather_off ? null : envFloat("WEATHER_LONGITUDE", 144.9631),
+    weather_location: envStr("WEATHER_LOCATION", "Melbourne"),
+    rss_feeds: envStr("RSS_FEEDS", "").split(",").map(feed => feed.trim()).filter(Boolean),
+    calendar_days: envInt("CALENDAR_DAYS", 7),
+  };
+
+  // HUB_CALENDARS: "Name|#colour|url;Name||url". Colour is optional.
+  const hub: HubConfig = {
+    title: envStr("HUB_TITLE", "Home"),
+    calendars: envStr("HUB_CALENDARS", "").split(";").flatMap(entry => {
+      const [name, color, ...rest] = entry.split("|");
+      const url = rest.join("|").trim().replace(/^webcal:\/\//i, "https://");
+      return name?.trim() && /^https?:\/\//i.test(url) ? [{ name: name.trim(), color: (color ?? "").trim(), url }] : [];
+    }),
+    include_media_calendar: envBool("HUB_MEDIA_CALENDAR", true),
+    days: envInt("HUB_DAYS", 7),
+    lists: envStr("HUB_LISTS", "To do,Shopping").split(",").map(list => list.trim()).filter(Boolean),
+    store_path: envStr("HUB_STORE_PATH", "var/hub.json"),
+    immich_api_key: envOpt("IMMICH_API_KEY"),
+    photo_album_ids: envStr("HUB_PHOTO_ALBUMS", "").split(",").map(id => id.trim()).filter(Boolean),
+    photo_seconds: envInt("HUB_PHOTO_SECONDS", 60),
+    countdowns: envStr("HUB_COUNTDOWNS", ""),
+    night: envStr("HUB_NIGHT", ""),
   };
 
   const updates: UpdatesConfig = {
@@ -562,14 +619,6 @@ export function getSettings(): Settings {
       expect_status: [200],
       critical: true,
       hosting: "Docker (immich-server)",
-    },
-    {
-      key: "sports_data_lab",
-      display: "Sports Data Lab",
-      url: envStr("SPORTS_DATA_LAB_URL", `http://${HOST_ADDR}:6969`) + "/_stcore/health",
-      expect_status: [200],
-      critical: true,
-      hosting: "systemd sports-data-lab.service (Streamlit, port 6969)",
     },
     {
       key: "aqualog",
@@ -647,19 +696,6 @@ export function getSettings(): Settings {
 
   const backups: BackupJob[] = [
     {
-      key: "sports_data_lab",
-      display: "Sports Data Lab archive",
-      directory: envStr("SPORTS_BACKUP_DIR", "/mnt/media/sportsDBackUp"),
-      pattern: "*.tar.gz",
-      schedule: "Wed & Sun 23:00 (cron: 0 23 * * 0,3)",
-      expected_interval_days: 4.0,
-      min_plausible_bytes: 1_000_000_000,
-      source: "/usr/local/sbin/sports-data-backup.sh (root crontab)",
-      schedule_weekdays: [0, 3],
-      schedule_hour: 23,
-      schedule_grace_hours: 3.0,
-    },
-    {
       key: "nightly_system",
       display: "Nightly system backup",
       directory: envStr("NIGHTLY_BACKUP_DIR", "/mnt/backup/nightly"),
@@ -674,14 +710,6 @@ export function getSettings(): Settings {
     },
   ];
 
-  const SPORTS_DB_ROOT = envStr("SPORTS_DATA_LAB_PATH", "/home/arm/projects/sports_data_lab");
-  const sports_databases: SportsDatabase[] = [
-    { key: "afl", display: "AFL", path: `${SPORTS_DB_ROOT}/data/afl/afl.db`, max_age_hours: 48.0 },
-    { key: "nba", display: "NBA", path: `${SPORTS_DB_ROOT}/data/nba/nba.db`, max_age_hours: 48.0 },
-    { key: "nfl", display: "NFL", path: `${SPORTS_DB_ROOT}/data/nfl/nfl.db`, max_age_hours: 48.0 },
-    { key: "mlb", display: "MLB", path: `${SPORTS_DB_ROOT}/data/mlb/mlb.db`, max_age_hours: 48.0 },
-  ];
-
   const expected_listeners: Record<number, string> = {
     22: "SSH",
     139: "Samba (NetBIOS)",
@@ -689,7 +717,6 @@ export function getSettings(): Settings {
     2283: "Immich",
     6881: "qBittorrent BitTorrent (via gluetun)",
     8000: "Gluetun HTTP control API",
-    6969: "Sports Data Lab (Streamlit)",
     8080: "SABnzbd (via gluetun)",
     8081: "Sonarr (via gluetun)",
     8082: "Radarr (via gluetun)",
@@ -714,6 +741,8 @@ export function getSettings(): Settings {
     local,
     raid,
     vpn,
+    home,
+    hub,
     api,
     updates,
     vlans: VLANS,
@@ -723,7 +752,6 @@ export function getSettings(): Settings {
     stacks,
     endpoints,
     backups,
-    sports_databases,
     external_ports: EXTERNAL_PORTS,
     expected_listeners,
     default_refresh_seconds: envInt("DASHBOARD_REFRESH_SECONDS", 30),

@@ -2,7 +2,6 @@ import { Settings } from './config';
 import { getFilesystemUsage, getCpuUsage, getMemoryInfo, getDiskIoRates } from './system';
 import { collectSmartLocal } from './smart';
 import { ping, DEFAULT_INTERNET_TARGET } from './network';
-import { getAllDatabases } from './sportsdb';
 import { get_interface_rates } from './network';
 
 // Metric keys used in the history store
@@ -17,7 +16,6 @@ export const M_IOWAIT = "host.iowait_percent";
 export const M_MEM_AVAIL = "host.mem_available_percent";
 export const M_LATENCY = "net.latency_ms";
 export const M_LOSS = "net.packet_loss_percent";
-export const M_DB_SIZE = "sportsdb.size_bytes";
 export const M_DISK_READ_BPS = "disk.read_bytes_per_second";
 export const M_DISK_WRITE_BPS = "disk.write_bytes_per_second";
 export const M_DISK_UTIL = "disk.utilisation_percent";
@@ -83,13 +81,6 @@ export async function sampleMetrics(settings: Settings): Promise<SampleRow[]> {
     const result = await ping(DEFAULT_INTERNET_TARGET, 3, 6.0);
     rows.push([M_LATENCY, null, result.latency_ms]);
     rows.push([M_LOSS, null, result.packet_loss_percent]);
-
-    const databases = getAllDatabases(settings.sports_databases);
-    for (const database of databases) {
-        if (database.size_bytes !== null) {
-            rows.push([M_DB_SIZE, { db: database.key }, database.size_bytes]);
-        }
-    }
 
     // _warm_slow_caches is omitted for now, we can add it later if needed.
 

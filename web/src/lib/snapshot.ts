@@ -11,7 +11,6 @@ import * as dockerService from './docker_service';
 import * as network from './network';
 import * as probes from './probes';
 import * as smart from './smart';
-import * as sportsdb from './sportsdb';
 import * as system from './system';
 import * as unifi from './unifi';
 import * as vpn from './vpn';
@@ -43,7 +42,6 @@ export const M_IOWAIT = "host.iowait_percent";
 export const M_MEM_AVAIL = "host.mem_available_percent";
 export const M_LATENCY = "net.latency_ms";
 export const M_LOSS = "net.packet_loss_percent";
-export const M_DB_SIZE = "sportsdb.size_bytes";
 
 // Safe wrapper? In TS we can just use try-catch inside async functions.
 export async function _safe<T>(func: () => Promise<T>, key: string, label: string, source: string): Promise<[T | null, Reading<any> | null]> {
@@ -1088,7 +1086,7 @@ export async function collectVpn(settings: Settings, history: HistoryStore, cont
         alerts, "vpn.gluetun", verdict, "VPN", "Gluetun VPN unhealthy",
         status.publicIp || "no tunnel",
         status.error || "",
-        `Check \`docker logs --tail 200 ${settings.vpn.container}\`. If AUTH_FAILED appears, the provider credentials are wrong.`
+        status.recommendation || `Check \`docker logs --tail 200 ${status.containerPresent ? container?.name : settings.vpn.container}\`. If AUTH_FAILED appears, the provider credentials are wrong.`
     );
 
     const leakVerdict = rules.classifyLeak(leak);
@@ -1142,7 +1140,7 @@ export async function collectApplications(settings: Settings, history: HistorySt
         readings.push(
             rules.readingFromVerdict(
                 `probe.${endpoint.key}`, endpoint.display,
-                result && result.latencyMs ? Math.round(result.latencyMs * 10) / 10 : null,
+                result && result.latency_ms != null ? Math.round(result.latency_ms * 10) / 10 : null,
                 verdict, " ms", source,
                 { probe: result, endpoint }
             )
@@ -1156,49 +1154,9 @@ export async function collectApplications(settings: Settings, history: HistorySt
         );
     }
 
-    const databases = await sportsdb.getAllDatabases(settings.sports_databases);
-    raw.sports_databases = databases;
-    for (const database of databases) {
-        if (database.size_bytes !== null) {
-            history.record(M_DB_SIZE, database.size_bytes, { db: database.key });
-        }
-        if (!database.exists) {
-            readings.push(
-                Reading.no_data(
-                    `sportsdb.${database.key}`, `${database.display} database`,
-                    database.error || "", "local:stat"
-                )
-            );
-            continue;
-        }
-        
-        let verdict: rules.Verdict;
-        if (sportsdb.isStale(database)) {
-            verdict = {
-                status: Status.WARNING,
-                detail: `Last updated ${humanDuration(sportsdb.getAgeSeconds(database) || 0)} ago, beyond the ${database.max_age_hours}h expectation.`,
-                threshold: `≤${database.max_age_hours}h`
-            };
-        } else {
-            verdict = {
-                status: Status.HEALTHY,
-                detail: `Updated ${humanDuration(sportsdb.getAgeSeconds(database) || 0)} ago (${humanBytes(database.size_bytes || 0)}).`,
-                threshold: ""
-            };
-        }
-        
-        readings.push(
-            rules.readingFromVerdict(
-                `sportsdb.${database.key}`, `${database.display} database`,
-                humanBytes(database.size_bytes || 0), verdict,
-                "", "local:stat", { database }
-            )
-        );
-    }
-
     const component = scoreComponent(
         "applications", "Applications", readings, alerts, null,
-        "Synthetic probes and application data freshness"
+        "Synthetic probes of the hosted applications"
     );
     return [component, raw];
 }
