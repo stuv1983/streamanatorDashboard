@@ -1,39 +1,67 @@
 "use client";
 
 import useSWR from "swr";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Acquiring, Code, EmptyState, ErrorState, Metric, PageHeader, Readout, Section, Source, Stamp, Well } from "@/components/instrument";
 import type { Snapshot } from "@/lib/snapshot";
 import { Status } from "@/lib/status";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-function StatusBadge({ status }: { status: Status }) {
-  const colorMap: Record<string, string> = {
-    [Status.HEALTHY]: "bg-green-500 text-white",
-    [Status.INFO]: "bg-blue-500 text-white",
-    [Status.WARNING]: "bg-yellow-500 text-white",
-    [Status.CRITICAL]: "bg-red-500 text-white",
-  };
-  return <Badge className={`${colorMap[status] ?? "bg-gray-500 text-white"} px-2 py-0.5 text-xs font-semibold`}>{status}</Badge>;
-}
-
 const STATUS_RANK: Record<string, number> = {
   [Status.CRITICAL]: 4, [Status.WARNING]: 3, [Status.UNKNOWN]: 2, [Status.INFO]: 1, [Status.HEALTHY]: 0,
 };
 
+/** Probe stages in the order they run; a later stage has no timing when an earlier one failed. */
+const STAGE_ORDER: Record<string, number> = { config: 0, dns: 1, tcp: 2, http: 3, status: 4 };
+
+function sampledAt(ts: number | null | undefined): string | null {
+  if (!ts) return null;
+  return new Date(ts * 1000).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Why a stage timing is missing, when the probe says. */
+function stageNote(probe: any, stage: "dns" | "tcp" | "http"): string | undefined {
+  if (probe.failed_stage === "unknown") return "not measured";
+  const failed = STAGE_ORDER[probe.failed_stage];
+  if (failed == null) return undefined;
+  if (failed === STAGE_ORDER[stage]) return "failed here";
+  if (failed < STAGE_ORDER[stage]) return "not reached";
+  return undefined;
+}
+
+function ms(value: number | null | undefined) {
+  return value != null ? Math.round(value) : null;
+}
+
 export default function ApplicationsPage() {
   const { data, error, isLoading } = useSWR<Snapshot>("/api/snapshot", fetcher, { refreshInterval: 60000, keepPreviousData: true });
 
-  if (error) return <div className="text-red-500 py-10">Failed to load snapshot: {String(error)}</div>;
-  if (isLoading && !data) return <Skeleton className="h-96 w-full" />;
+  const component = data?.components?.applications;
+  const time = sampledAt(data?.collected_at);
+  const source = (component?.readings as any[] | undefined)?.find((r: any) => r.source && r.state === "OK")?.source;
+  const header = (
+    <PageHeader
+      group="Services"
+      title="Applications"
+      description="Whether each hosted application answers its HTTP probe, and which stage fails when it doesn't."
+      status={component?.status}
+      meta={[source, time && `sampled ${time}`].filter(Boolean).join(" · ") || undefined}
+    />
+  );
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-8">
+        {header}
+        <ErrorState title="The snapshot didn't load" detail={error}>Check that the dashboard server is running and that <Code>/api/snapshot</Code> responds.</ErrorState>
+      </div>
+    );
+  }
+  if (isLoading && !data) return <div className="flex flex-col gap-8">{header}<Acquiring rows={4} /></div>;
 
   const snapshot = data!;
   const raw = (snapshot.raw?.applications ?? {}) as Record<string, any>;
   const probes: Record<string, any> = raw.probes ?? {};
-  const sportsDatabases: any[] = raw.sports_databases ?? [];
-  const component = snapshot.components?.applications;
   const readings: any[] = (component?.readings as any[]) ?? [];
 
   const probeRows = Object.entries(probes)
@@ -43,105 +71,65 @@ export default function ApplicationsPage() {
     })
     .sort((a, b) => (STATUS_RANK[b.status] ?? 0) - (STATUS_RANK[a.status] ?? 0));
 
-  function humanBytes(bytes: number): string {
-    if (bytes == null) return "—";
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let i = 0; let v = bytes;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-    return `${v.toFixed(1)} ${units[i]}`;
-  }
-
-  function humanAge(ts: number | null): string {
-    if (!ts) return "—";
-    const seconds = Math.floor(Date.now() / 1000) - ts;
-    if (seconds < 60) return `${seconds}s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-  }
+  const failing = probeRows.filter(({ probe }) => probe.success === false).length;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Applications</h1>
-        <p className="text-muted-foreground mt-1">Synthetic HTTP probes and application data freshness</p>
-      </div>
+    <div className="flex flex-col gap-10">
+      {header}
 
-      {/* Service probes */}
-      <div>
-        <h2 className="text-xl font-semibold mb-3">Service probes</h2>
-        {probeRows.length === 0 ? (
-          <Card><CardContent className="pt-6 text-sm text-muted-foreground">No probes configured.</CardContent></Card>
-        ) : (
-          <Card>
-            <CardContent className="pt-4 overflow-x-auto">
-              <table className="w-full text-sm whitespace-nowrap">
-                <thead>
-                  <tr className="text-muted-foreground text-xs border-b">
-                    {["Status","Service","HTTP","Latency","DNS","TCP","TLS expiry","URL"].map(h => (
-                      <th key={h} className="text-left py-1 pr-4 font-medium">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {probeRows.map(({ key, probe, status }) => (
-                    <tr key={key} className="border-b border-border/40 last:border-0">
-                      <td className="py-1.5 pr-4"><StatusBadge status={status} /></td>
-                      <td className="py-1.5 pr-4 font-medium">{probe.display ?? key}</td>
-                      <td className="py-1.5 pr-4">{probe.status_code ?? "—"}</td>
-                      <td className="py-1.5 pr-4">{probe.latency_ms != null ? `${Math.round(probe.latency_ms)} ms` : "—"}</td>
-                      <td className="py-1.5 pr-4">{probe.dns_ms != null ? `${Math.round(probe.dns_ms)} ms` : "—"}</td>
-                      <td className="py-1.5 pr-4">{probe.connect_ms != null ? `${Math.round(probe.connect_ms)} ms` : "—"}</td>
-                      <td className="py-1.5 pr-4">{probe.tls_days_remaining != null ? `${Math.round(probe.tls_days_remaining)} d` : "—"}</td>
-                      <td className="py-1.5 font-mono text-xs">{probe.url ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="text-xs text-muted-foreground mt-2">Stage timings are separated deliberately — a DNS failure and an application returning 500 are very different problems.</p>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
-      {/* Sports databases */}
-      {sportsDatabases.length > 0 && (
-        <div>
-          <h2 className="text-xl font-semibold mb-3">Sports databases</h2>
-          <div className="space-y-3">
-            {sportsDatabases.map((db: any) => (
-              <Card key={db.key ?? db.path} className={!db.exists ? "border-red-500/30" : db.stale ? "border-yellow-500/30" : ""}>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base">{db.display}</CardTitle>
-                      <p className="text-xs text-muted-foreground font-mono mt-0.5">{db.path}</p>
-                    </div>
-                    <Badge className={db.stale ? "bg-yellow-500 text-white" : db.exists ? "bg-green-500 text-white" : "bg-red-500 text-white"}>
-                      {db.stale ? "Stale" : db.exists ? "Current" : "Missing"}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                {db.exists && (
-                  <CardContent>
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
-                      <div><p className="text-xs text-muted-foreground">Size</p><p className="font-bold">{humanBytes(db.size_bytes)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">Age</p><p className="font-bold">{humanAge(db.modified_at)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">Snapshots</p><p className="font-bold">{db.backup_count ?? "—"}</p></div>
-                      <div><p className="text-xs text-muted-foreground">Latest snapshot</p><p className="font-bold">{humanAge(db.latest_backup_at)}</p></div>
-                    </div>
-                  </CardContent>
-                )}
-                {!db.exists && db.error && (
-                  <CardContent><p className="text-xs text-muted-foreground">{db.error}</p></CardContent>
-                )}
-              </Card>
-            ))}
-          </div>
-        </div>
+      {probeRows.length > 0 && (
+        <Well className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
+          <Metric label="Probed" value={probeRows.length} size="lg" />
+          <Metric label="Answering" value={probeRows.length - failing} size="lg" />
+          <Metric label="Failing" value={failing} size="lg" />
+        </Well>
       )}
+
+      <Section title="Service probes" count={probeRows.length} note={probeRows.length ? "Worst first" : undefined}>
+        {probeRows.length === 0 ? (
+          <EmptyState title="No probes configured">
+            No application has a URL to probe, so nothing here says whether they are up. Set the application URLs in the dashboard&apos;s environment (see <Code>.env.example</Code>) and they will appear on the next sample.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="flex flex-col border-b border-seam">
+              {probeRows.map(({ key, probe, status }) => {
+                const tlsApplies = typeof probe.url !== "string" || !probe.url.startsWith("http://");
+                return (
+                  <div key={key} className="grid grid-cols-1 items-center gap-x-5 gap-y-3 border-t border-seam px-1 py-3.5 md:grid-cols-[128px_minmax(0,1fr)] xl:grid-cols-[128px_minmax(0,1fr)_minmax(0,1.5fr)]">
+                    <div><Stamp status={status} /></div>
+                    <div className="min-w-0">
+                      <p className="m-0 text-base font-semibold">{probe.display ?? key}</p>
+                      {probe.url
+                        ? <p className="m-0 mt-0.5 break-all font-mono text-xs text-graphite">{probe.url}</p>
+                        : <Readout value={null} state="NOT_CONFIGURED" size="sm" note="no URL" className="mt-1" />}
+                      {probe.success === false && probe.error && (
+                        <p className="m-0 mt-1.5 text-sm leading-normal text-silk-dim text-pretty">
+                          {probe.failed_stage && probe.failed_stage !== "unknown" && <span className="panel-label mr-2">Failed at {probe.failed_stage}</span>}
+                          {probe.error}
+                        </p>
+                      )}
+                    </div>
+                    <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2.5 sm:grid-cols-5 md:col-start-2 xl:col-start-auto">
+                      <Metric label="HTTP" value={probe.status_code ?? null} size="sm" note={stageNote(probe, "http")} />
+                      <Metric label="Latency" value={ms(probe.latency_ms)} unit="ms" size="sm" note={stageNote(probe, "http")} />
+                      <Metric label="DNS" value={ms(probe.dns_ms)} unit="ms" size="sm" note={stageNote(probe, "dns")} />
+                      <Metric label="TCP" value={ms(probe.connect_ms)} unit="ms" size="sm" note={stageNote(probe, "tcp")} />
+                      {tlsApplies
+                        ? <Metric label="TLS expiry" value={probe.tls_days_remaining != null ? Math.round(probe.tls_days_remaining) : null} unit="d" size="sm" />
+                        : <Metric label="TLS expiry" value={null} state="NOT_APPLICABLE" note="plain HTTP" size="sm" />}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="m-0 max-w-[75ch] text-sm leading-normal text-silk-dim">
+              Stage timings are kept separate on purpose: a DNS failure and an application returning 500 are different problems.
+            </p>
+            {source && <Source>Probed by {source}.</Source>}
+          </>
+        )}
+      </Section>
     </div>
   );
 }
-
-

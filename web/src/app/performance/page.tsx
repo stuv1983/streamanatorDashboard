@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   Area,
@@ -11,9 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Activity, Cpu, Database, Expand, HardDrive, Network, X } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Acquiring, ErrorState, Metric, PageHeader, Readout, Section, Segmented, Void, Well } from "@/components/instrument";
 
 type Point = [number, number];
 type HistoryResponse = {
@@ -21,6 +19,8 @@ type HistoryResponse = {
   generated_at: number;
   series: Record<string, Point[]>;
 };
+
+const RANGES = ["1h", "6h", "24h", "7d", "30d"] as const;
 
 const fetcher = (url: string) => fetch(url).then(async response => {
   if (!response.ok) throw new Error((await response.json()).error ?? "History request failed");
@@ -48,11 +48,17 @@ function formatBytes(value: number) {
 
 function latest(points: Point[] = []) { return points.at(-1)?.[1] ?? null; }
 function peak(points: Point[] = []) { return points.length ? Math.max(...points.map(point => point[1])) : null; }
+/** Highest of several peaks; null only when none of them has data (never a fake zero). */
+function maxOf(...values: Array<number | null>) {
+  const known = values.filter((v): v is number => v != null);
+  return known.length ? Math.max(...known) : null;
+}
 
-function SignalLane({ title, subtitle, icon, data, lines, domain, formatter }: {
+const AXIS_TICK = { fill: "var(--graphite)", fontFamily: "var(--font-mono)" };
+
+function SignalLane({ title, subtitle, data, lines, domain, formatter }: {
   title: string;
   subtitle: string;
-  icon: React.ReactNode;
   data: Record<string, number>[];
   lines: { key: string; label: string; color: string }[];
   domain?: [number | "auto", number | "auto"];
@@ -60,7 +66,6 @@ function SignalLane({ title, subtitle, icon, data, lines, domain, formatter }: {
 }) {
   const current = data.at(-1)?.[lines[0].key];
   const [expanded, setExpanded] = useState(false);
-  const gradientId = useId().replaceAll(":", "");
 
   useEffect(() => {
     if (!expanded) return;
@@ -69,57 +74,125 @@ function SignalLane({ title, subtitle, icon, data, lines, domain, formatter }: {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [expanded]);
 
-  const chart = (large = false) => {
-    const chartGradientId = `${gradientId}-${large ? "expanded" : "card"}`;
-    return data.length < 2 ? (
-    <div className="grid h-full place-items-center text-xs text-muted-foreground">Collecting samples—this lane fills in over the next few minutes.</div>
+  const chart = (large = false) => data.length < 2 ? (
+    <Void state="ACQUIRING" className="h-full" note="Collecting samples. This lane fills in over the next few minutes." />
   ) : (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 4, right: large ? 20 : 8, bottom: 0, left: large ? 12 : 0 }}>
-        <defs>{lines.map(line => <linearGradient key={line.key} id={`${chartGradientId}-fill-${line.key}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={line.color} stopOpacity={0.35}/><stop offset="100%" stopColor={line.color} stopOpacity={0.02}/></linearGradient>)}</defs>
-        <CartesianGrid strokeDasharray="2 5" vertical={false} stroke="var(--border)" opacity={0.5}/>
-        <XAxis dataKey="timestamp" type="number" domain={["dataMin", "dataMax"]} tickFormatter={value => new Date(value * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} tick={{ fontSize: large ? 12 : 10 }} minTickGap={42}/>
-        <YAxis domain={domain ?? [0, "auto"]} tickFormatter={value => formatter(Number(value))} tick={{ fontSize: large ? 12 : 10 }} width={large ? 76 : 62}/>
-        <Tooltip labelFormatter={value => new Date(Number(value) * 1000).toLocaleString()} formatter={(value: any, name: any) => [formatter(Number(value)), lines.find(line => line.key === name)?.label ?? name]} contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}/>
-        {lines.map(line => <Area key={line.key} type="monotone" dataKey={line.key} stroke={line.color} fill={`url(#${chartGradientId}-fill-${line.key})`} strokeWidth={large ? 2.4 : 1.8} dot={false} connectNulls isAnimationActive={false}/>) }
+      <AreaChart data={data} margin={{ top: 6, right: large ? 20 : 10, bottom: 0, left: large ? 12 : 0 }}>
+        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+        <XAxis
+          dataKey="timestamp"
+          type="number"
+          domain={["dataMin", "dataMax"]}
+          tickFormatter={value => new Date(value * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          tick={{ ...AXIS_TICK, fontSize: large ? 12 : 10.5 }}
+          stroke="var(--chart-axis)"
+          tickLine={false}
+          minTickGap={42}
+        />
+        <YAxis
+          domain={domain ?? [0, "auto"]}
+          tickFormatter={value => formatter(Number(value))}
+          tick={{ ...AXIS_TICK, fontSize: large ? 12 : 10.5 }}
+          stroke="var(--chart-axis)"
+          tickLine={false}
+          axisLine={false}
+          width={large ? 80 : 66}
+        />
+        <Tooltip
+          labelFormatter={value => new Date(Number(value) * 1000).toLocaleString()}
+          formatter={(value: any, name: any) => [formatter(Number(value)), lines.find(line => line.key === name)?.label ?? name]}
+          contentStyle={{ background: "var(--bezel)", border: "1px solid var(--seam-strong)", borderRadius: 3, fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--silk)" }}
+          labelStyle={{ color: "var(--graphite)" }}
+          itemStyle={{ color: "var(--silk)" }}
+          cursor={{ stroke: "var(--seam-strong)" }}
+        />
+        {lines.map(line => (
+          <Area
+            key={line.key}
+            type="monotone"
+            dataKey={line.key}
+            stroke={line.color}
+            fill={line.color}
+            fillOpacity={0.12}
+            strokeWidth={large ? 2 : 1.5}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
+        ))}
       </AreaChart>
     </ResponsiveContainer>
-    );
-  };
+  );
+
+  const legend = (
+    <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-xs text-silk-dim">
+      {lines.map(line => (
+        <span key={line.key} className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-0.5 w-3" style={{ background: line.color }} aria-hidden />
+          {line.label}
+        </span>
+      ))}
+    </div>
+  );
 
   return (
     <>
-    <Card className="group overflow-hidden border-border/70 bg-card/70 transition hover:border-cyan-500/40">
-      <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-1">
-        <div>
-          <CardTitle className="flex items-center gap-2 text-sm font-semibold">{icon}{title}</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>
-        </div>
-        <div className="flex items-start gap-2 text-right">
-          <div>
-          <p className="font-mono text-lg font-semibold tabular-nums">{current == null ? "—" : formatter(current)}</p>
-          <div className="flex justify-end gap-3 text-[10px] text-muted-foreground">
-            {lines.map(line => <span key={line.key}><i className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ background: line.color }} />{line.label}</span>)}
+      <div className="flex min-w-0 flex-col gap-3 rounded-[3px] border border-seam bg-bezel px-5 py-[18px]">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0">
+            <h3 className="panel-label m-0">{title}</h3>
+            <p className="m-0 mt-1.5 text-sm leading-snug text-silk-dim">{subtitle}</p>
           </div>
+          <div className="flex items-start gap-3">
+            <div className="flex flex-col items-end gap-1">
+              {data.length >= 2 && <Readout value={current == null ? null : formatter(current)} size="md" note="No latest sample." />}
+              {legend}
+            </div>
+            <button
+              type="button"
+              aria-label={`Expand ${title} graph`}
+              onClick={() => setExpanded(true)}
+              className="min-h-10 shrink-0 rounded-[2px] border border-seam px-3 text-[13px] font-semibold text-silk-dim hover:border-seam-strong hover:text-silk"
+            >
+              Expand
+            </button>
           </div>
-          <button type="button" aria-label={`Expand ${title} graph`} onClick={() => setExpanded(true)} className="grid h-11 w-11 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <Expand className="h-4 w-4" />
-          </button>
         </div>
-      </CardHeader>
-      <CardContent onClick={() => setExpanded(true)} role="button" tabIndex={0} aria-label={`Expand ${title} graph`} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setExpanded(true); } }} className="h-48 cursor-zoom-in px-1 pb-1 pt-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-        {chart()}
-      </CardContent>
-    </Card>
-    {expanded && (
-      <div role="dialog" aria-modal="true" aria-label={`${title} expanded graph`} className="fixed inset-0 z-[100] flex flex-col bg-background/98 p-3 backdrop-blur md:p-8">
-        <div className="mb-3 flex items-start justify-between gap-4">
-          <div><h2 className="text-xl font-semibold">{title}</h2><p className="text-sm text-muted-foreground">{subtitle}</p></div>
-          <button autoFocus type="button" aria-label={`Close ${title} graph`} onClick={() => setExpanded(false)} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border hover:bg-accent"><X className="h-5 w-5" /></button>
+        <div
+          onClick={() => setExpanded(true)}
+          role="button"
+          tabIndex={0}
+          aria-label={`Expand ${title} graph`}
+          onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setExpanded(true); } }}
+          className="well h-48 cursor-zoom-in px-1 pb-1 pt-2"
+        >
+          {chart()}
         </div>
-        <div className="min-h-0 flex-1">{chart(true)}</div>
       </div>
-    )}
+      {expanded && (
+        <div role="dialog" aria-modal="true" aria-label={`${title} expanded graph`} className="fixed inset-0 z-[100] flex flex-col gap-4 bg-enamel p-4 md:p-8">
+          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-seam pb-4">
+            <div className="min-w-0">
+              <h2 className="panel-label m-0">{title}</h2>
+              <p className="m-0 mt-1.5 text-base text-silk-dim">{subtitle}</p>
+            </div>
+            <div className="flex items-center gap-4">
+              {legend}
+              <button
+                autoFocus
+                type="button"
+                aria-label={`Close ${title} graph`}
+                onClick={() => setExpanded(false)}
+                className="min-h-10 shrink-0 rounded-[2px] border border-seam-strong bg-bezel px-4 text-sm font-semibold text-silk hover:bg-well"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="well min-h-0 flex-1 p-2">{chart(true)}</div>
+        </div>
+      )}
     </>
   );
 }
@@ -136,40 +209,87 @@ export default function PerformancePage() {
     latency: mergeSeries(series, ["latency", "packet_loss"]),
   }), [series]);
 
-  if (error) return <div className="py-10 text-red-500">Performance history could not load: {String(error)}</div>;
-  if (isLoading && !data) return <Skeleton className="h-[38rem] w-full" />;
+  const header = (
+    <PageHeader
+      group="Infrastructure"
+      title="Performance history"
+      description="Where has the host been under pressure, stalled or busy with traffic over the chosen window?"
+      meta={["local history · 1-minute samples", data?.generated_at && `generated ${new Date(data.generated_at * 1000).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}`].filter(Boolean).join(" · ")}
+      actions={
+        <Segmented
+          label="History window"
+          options={RANGES.map(option => ({ value: option, label: <span className="font-mono">{option}</span> }))}
+          value={range as (typeof RANGES)[number]}
+          onChange={setRange}
+        />
+      }
+    >
+      {error && data ? (
+        <Void state="STALE" note={`The latest refresh failed (${error instanceof Error ? error.message : String(error)}). Showing the previous history until it recovers.`} />
+      ) : null}
+    </PageHeader>
+  );
 
-  const summary = [
-    { label: "CPU now", value: latest(series.cpu), format: (v: number) => `${v.toFixed(1)}%` },
-    { label: "CPU peak", value: peak(series.cpu), format: (v: number) => `${v.toFixed(1)}%` },
-    { label: "Memory now", value: latest(series.memory_used), format: (v: number) => `${v.toFixed(1)}%` },
-    { label: "Latency peak", value: peak(series.latency), format: (v: number) => `${v.toFixed(0)} ms` },
-    { label: "Disk peak", value: Math.max(peak(series.disk_read) ?? 0, peak(series.disk_write) ?? 0), format: formatBytes },
-    { label: "Network peak", value: Math.max(peak(series.network_rx) ?? 0, peak(series.network_tx) ?? 0), format: formatBytes },
+  if (error && !data) {
+    return (
+      <div className="flex flex-col gap-10">
+        {header}
+        <ErrorState title="Performance history didn't load" detail={error}>
+          The request to <span className="font-mono">/api/history?range={range}</span> failed. Check that the history store is writable and see <span className="font-mono">/diagnostics</span>.
+        </ErrorState>
+      </div>
+    );
+  }
+  if (isLoading && !data) {
+    return (
+      <div className="flex flex-col gap-10">
+        {header}
+        <Acquiring rows={4} />
+      </div>
+    );
+  }
+
+  const pct = (v: number) => v.toFixed(1);
+  const summary: Array<{ label: string; value: number | null; format: (v: number) => string; unit?: string }> = [
+    { label: "CPU now", value: latest(series.cpu), format: pct, unit: "%" },
+    { label: "CPU peak", value: peak(series.cpu), format: pct, unit: "%" },
+    { label: "Memory now", value: latest(series.memory_used), format: pct, unit: "%" },
+    { label: "Latency peak", value: peak(series.latency), format: (v: number) => v.toFixed(0), unit: "ms" },
+    { label: "Disk peak", value: maxOf(peak(series.disk_read), peak(series.disk_write)), format: formatBytes },
+    { label: "Network peak", value: maxOf(peak(series.network_rx), peak(series.network_tx)), format: formatBytes },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-500">Live signal desk</p>
-          <h1 className="mt-1 text-3xl font-bold tracking-tight">Performance</h1>
-          <p className="mt-1 text-muted-foreground">One-minute history for spotting pressure, stalls, and traffic spikes.</p>
+    <div className="flex flex-col gap-10">
+      {header}
+
+      <Section title="Window summary" note={`Last ${range}`}>
+        <Well>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-5 md:grid-cols-3 xl:grid-cols-6">
+            {summary.map(item => (
+              <Metric
+                key={item.label}
+                label={item.label}
+                value={item.value == null ? null : item.format(item.value)}
+                unit={item.value == null ? undefined : item.unit}
+                note="No samples in this window."
+              />
+            ))}
+          </div>
+        </Well>
+      </Section>
+
+      <Section title="Signals" count={5}>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <SignalLane title="Processor" subtitle="Total CPU pressure and time waiting on storage" data={lanes.cpu} lines={[{ key: "cpu", label: "CPU", color: "var(--series-1)" }, { key: "iowait", label: "I/O wait", color: "var(--series-2)" }]} domain={[0, 100]} formatter={value => `${value.toFixed(0)}%`} />
+          <SignalLane title="Memory" subtitle="Physical memory in active use" data={lanes.memory} lines={[{ key: "memory_used", label: "Used", color: "var(--series-1)" }]} domain={[0, 100]} formatter={value => `${value.toFixed(0)}%`} />
+          <SignalLane title="Storage throughput" subtitle="Aggregate reads and writes across block devices" data={lanes.disk} lines={[{ key: "disk_read", label: "Read", color: "var(--series-1)" }, { key: "disk_write", label: "Write", color: "var(--series-2)" }]} formatter={formatBytes} />
+          <SignalLane title="Network throughput" subtitle="Physical interfaces only; virtual container links are excluded" data={lanes.network} lines={[{ key: "network_rx", label: "Receive", color: "var(--series-1)" }, { key: "network_tx", label: "Send", color: "var(--series-2)" }]} formatter={formatBytes} />
+          <div className="xl:col-span-2">
+            <SignalLane title="Network response" subtitle="Internet latency to the ping target" data={lanes.latency} lines={[{ key: "latency", label: "Latency", color: "var(--series-1)" }]} formatter={value => `${value.toFixed(0)} ms`} />
+          </div>
         </div>
-        <div className="flex rounded-lg border bg-muted/25 p-1">{["1h", "6h", "24h", "7d", "30d"].map(option => <button key={option} onClick={() => setRange(option)} className={`rounded-md px-3 py-1.5 font-mono text-xs transition ${range === option ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{option}</button>)}</div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-border md:grid-cols-3 xl:grid-cols-6">
-        {summary.map(item => <div key={item.label} className="bg-card px-4 py-3"><p className="text-[10px] uppercase tracking-wider text-muted-foreground">{item.label}</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{item.value == null ? "—" : item.format(item.value)}</p></div>)}
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <SignalLane title="Processor" subtitle="Total CPU pressure and time waiting on storage" icon={<Cpu className="h-4 w-4 text-cyan-500"/>} data={lanes.cpu} lines={[{ key: "cpu", label: "CPU", color: "#22d3ee" }, { key: "iowait", label: "I/O wait", color: "#f59e0b" }]} domain={[0, 100]} formatter={value => `${value.toFixed(0)}%`}/>
-        <SignalLane title="Memory" subtitle="Physical memory in active use" icon={<Database className="h-4 w-4 text-violet-500"/>} data={lanes.memory} lines={[{ key: "memory_used", label: "Used", color: "#8b5cf6" }]} domain={[0, 100]} formatter={value => `${value.toFixed(0)}%`}/>
-        <SignalLane title="Storage throughput" subtitle="Aggregate reads and writes across block devices" icon={<HardDrive className="h-4 w-4 text-emerald-500"/>} data={lanes.disk} lines={[{ key: "disk_read", label: "Read", color: "#10b981" }, { key: "disk_write", label: "Write", color: "#f97316" }]} formatter={formatBytes}/>
-        <SignalLane title="Network throughput" subtitle="Physical interfaces; virtual container links excluded" icon={<Network className="h-4 w-4 text-blue-500"/>} data={lanes.network} lines={[{ key: "network_rx", label: "Receive", color: "#3b82f6" }, { key: "network_tx", label: "Send", color: "#ec4899" }]} formatter={formatBytes}/>
-        <div className="xl:col-span-2"><SignalLane title="Network response" subtitle="Internet latency with packet-loss pressure" icon={<Activity className="h-4 w-4 text-amber-500"/>} data={lanes.latency} lines={[{ key: "latency", label: "Latency", color: "#f59e0b" }]} formatter={value => `${value.toFixed(0)} ms`}/></div>
-      </div>
+      </Section>
     </div>
   );
 }

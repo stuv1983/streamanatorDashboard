@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
+import { useState, useEffect, useId } from "react";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Acquiring, Code, ErrorState, Facts, Lamp, PageHeader, Panel, Segmented, Stamp, Well, type StatusLike } from "@/components/instrument";
 
 // ─── Simple fetch helpers ────────────────────────────────────────────────────
 async function apiFetch(url: string, opts?: RequestInit) {
@@ -13,37 +13,59 @@ async function apiFetch(url: string, opts?: RequestInit) {
 }
 
 // ─── UI Primitives ───────────────────────────────────────────────────────────
-function Input({ label, name, value, type = "text", placeholder, onChange, readOnly }: {
+/** A labelled field: label above, recessed well input, help text under it. */
+function Input({ label, name, value, type = "text", placeholder, onChange, readOnly, help }: {
   label: string; name: string; value: string; type?: string;
-  placeholder?: string; onChange?: (v: string) => void; readOnly?: boolean;
+  placeholder?: string; onChange?: (v: string) => void; readOnly?: boolean; help?: React.ReactNode;
 }) {
+  const id = useId();
+  // Secrets come back from the server masked; the server ignores the mask and blank values on save.
+  const note = help ?? (type === "password" ? "Masked when set. Leave it unchanged to keep the current value." : null);
   return (
-    <div className="space-y-1">
-      <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</label>
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <label htmlFor={id} className="text-[13px] font-semibold text-silk-dim">{label}</label>
       <input
+        id={id}
         name={name} type={type} value={value} readOnly={readOnly}
         placeholder={placeholder ?? ""}
         onChange={e => onChange?.(e.target.value)}
-        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 read-only:opacity-60 read-only:cursor-default"
+        aria-describedby={note ? `${id}-help` : undefined}
+        className="h-10 w-full min-w-0 rounded-[3px] border border-seam-strong bg-well px-3 font-mono text-sm text-silk placeholder:font-sans placeholder:text-graphite disabled:opacity-50 read-only:cursor-default read-only:opacity-60"
       />
+      {note && <p id={`${id}-help`} className="m-0 text-[13px] leading-snug text-silk-dim">{note}</p>}
     </div>
+  );
+}
+
+/** A status line: lamp plus words, never a coloured box. */
+function Notice({ status, children, role = "status" }: { status: StatusLike; children: React.ReactNode; role?: "status" | "alert" }) {
+  return (
+    <p role={role} className="m-0 flex items-start gap-2 text-sm text-silk">
+      <Lamp status={status} className="mt-[5px]" />
+      <span>{children}</span>
+    </p>
   );
 }
 
 function SaveBar({ saving, message, error, onSave }: { saving: boolean; message?: string; error?: string; onSave: () => void }) {
   return (
-    <div className="flex items-center gap-3 mt-4 pt-4 border-t">
-      <button
-        onClick={onSave} disabled={saving}
-        className="px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition"
-      >
-        {saving ? "Saving…" : "Save to .env"}
-      </button>
-      {message && <span className="text-sm text-green-500">{message}</span>}
-      {error && <span className="text-sm text-red-500">{error}</span>}
-      {!message && !error && <span className="text-xs text-muted-foreground">Changes apply after service restart.</span>}
+    <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-seam bg-enamel px-1 py-4">
+      <Button type="button" onClick={onSave} disabled={saving}>
+        {saving ? "Saving…" : "Save changes"}
+      </Button>
+      {message && <Notice status={message.startsWith("No changes") ? "INFO" : "HEALTHY"}>{message}</Notice>}
+      {error && <Notice status="CRITICAL" role="alert">Couldn&apos;t save: {error}</Notice>}
+      {!message && !error && <span className="text-[13px] text-silk-dim">Writes to <span className="font-mono">.env</span>; changes apply after a service restart.</span>}
     </div>
   );
+}
+
+function FieldGrid({ children }: { children: React.ReactNode }) {
+  return <div className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">{children}</div>;
+}
+
+function Intro({ children }: { children: React.ReactNode }) {
+  return <p className="m-0 max-w-[75ch] text-sm leading-relaxed text-silk-dim">{children}</p>;
 }
 
 // ─── Login Form ──────────────────────────────────────────────────────────────
@@ -62,47 +84,32 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
     });
     setLoading(false);
     if (ok) { onLogin(); }
-    else { setError(data.error ?? "Login failed"); }
+    else { setError(data.error ?? "Sign-in failed. Check the password and try again."); }
   }
 
   return (
-    <div className="max-w-sm mx-auto mt-16">
-      <Card>
-        <CardHeader>
-          <CardTitle>Admin sign-in</CardTitle>
-          <CardDescription>Privileged access to configuration and actions</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Input label="Password" name="password" type="password" value={password} onChange={setPassword} />
-            {error && <p className="text-sm text-red-500">{error}</p>}
-            <button
-              type="submit" disabled={loading || !password}
-              className="w-full px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary/90 disabled:opacity-50 transition"
-            >
-              {loading ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
-          <p className="text-xs text-muted-foreground mt-4">
-            Set <code className="font-mono bg-muted px-1 rounded">ADMIN_PASSWORD</code> in <code className="font-mono bg-muted px-1 rounded">.env</code> on the server, then restart the service.
-          </p>
-        </CardContent>
-      </Card>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        group="Admin"
+        title="Admin sign-in"
+        description="Sign in to change server settings, edit alert rules and read the audit log."
+        meta="Session lasts 8 hours"
+      />
+      <Panel title="Sign in" className="w-full max-w-[440px]">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Input label="Password" name="password" type="password" value={password} onChange={setPassword} help="The ADMIN_PASSWORD set in .env on the server." />
+            {error && <Notice status="CRITICAL" role="alert">{error}</Notice>}
+          </div>
+          <Button type="submit" disabled={loading || !password} className="w-full">
+            {loading ? "Signing in…" : "Sign in"}
+          </Button>
+        </form>
+        <p className="m-0 border-t border-seam pt-4 text-[13px] leading-relaxed text-silk-dim">
+          No password yet? Set <Code>ADMIN_PASSWORD</Code> in <Code>.env</Code> on the server, then restart the service.
+        </p>
+      </Panel>
     </div>
-  );
-}
-
-// ─── Tab button ──────────────────────────────────────────────────────────────
-function Tab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-4 py-2 text-sm font-medium rounded-t-md border-b-2 transition ${
-        active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -119,19 +126,22 @@ function ThresholdsTab({ env, onUpdate }: { env: Record<string, string>; onUpdat
     { key: "TH_LATENCY_WARNING", label: "Latency warning (ms)", placeholder: "100" },
   ];
   return (
-    <div className="grid sm:grid-cols-2 gap-4">
-      {fields.map(f => (
-        <Input key={f.key} label={f.label} name={f.key} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
-      ))}
-    </div>
+    <Panel title="Alert thresholds">
+      <Intro>Limits the snapshot health checks compare against. Live-stream rules are edited on the Alert rules page.</Intro>
+      <FieldGrid>
+        {fields.map(f => (
+          <Input key={f.key} label={f.label} name={f.key} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
+        ))}
+      </FieldGrid>
+    </Panel>
   );
 }
 
 // ─── VPN tab ─────────────────────────────────────────────────────────────────
 function VpnTab({ env, onUpdate }: { env: Record<string, string>; onUpdate: (key: string, val: string) => void }) {
   const fields = [
-    { key: "VPN_PROVIDER", label: "VPN provider", placeholder: "nordvpn" },
-    { key: "VPN_PROTOCOL", label: "VPN protocol", placeholder: "openvpn" },
+    { key: "VPN_PROVIDER", label: "VPN provider", placeholder: "protonvpn" },
+    { key: "VPN_PROTOCOL", label: "VPN protocol", placeholder: "wireguard" },
     { key: "GLUETUN_CONTAINER", label: "Gluetun container name", placeholder: "media-vpn_gluetun_1" },
     { key: "GLUETUN_CONTROL_URL", label: "Gluetun control URL", placeholder: "http://10.0.40.100:8000" },
     { key: "GLUETUN_API_KEY", label: "Gluetun API key", type: "password", placeholder: "leave blank to keep current" },
@@ -139,16 +149,16 @@ function VpnTab({ env, onUpdate }: { env: Record<string, string>; onUpdate: (key
     { key: "WAN_IP_CHECK_URL", label: "IP check URL (WAN side)", placeholder: "https://ipinfo.io/json" },
   ];
   return (
-    <div className="space-y-4">
-      <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-xs text-blue-400">
-        VPN settings control what the dashboard monitors — not the VPN tunnel itself. Changing the container name or provider reloads on next service restart.
-      </div>
-      <div className="grid sm:grid-cols-2 gap-4">
+    <Panel title="VPN monitoring">
+      <Intro>
+        These settings control what the dashboard monitors, not the VPN tunnel itself. A new container name or provider takes effect after the next service restart.
+      </Intro>
+      <FieldGrid>
         {fields.map(f => (
           <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
         ))}
-      </div>
-    </div>
+      </FieldGrid>
+    </Panel>
   );
 }
 
@@ -161,16 +171,16 @@ function UnifiTab({ env, onUpdate }: { env: Record<string, string>; onUpdate: (k
     { key: "UNIFI_VERIFY_TLS", label: "Verify TLS (true/false)", placeholder: "false" },
   ];
   return (
-    <div className="space-y-4">
-      <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-xs text-blue-400">
+    <Panel title="UniFi controller">
+      <Intro>
         Create the API key at UniFi Console → Settings → Control Plane → Integrations. The dashboard only issues GET requests.
-      </div>
-      <div className="grid sm:grid-cols-2 gap-4">
+      </Intro>
+      <FieldGrid>
         {fields.map(f => (
           <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
         ))}
-      </div>
-    </div>
+      </FieldGrid>
+    </Panel>
   );
 }
 
@@ -179,7 +189,6 @@ function EndpointsTab({ env, onUpdate }: { env: Record<string, string>; onUpdate
   const fields = [
     { key: "PLEX_URL", label: "Plex URL" },
     { key: "IMMICH_URL", label: "Immich URL" },
-    { key: "SPORTS_DATA_LAB_URL", label: "Sports Data Lab URL" },
     { key: "AQUALOG_URL", label: "AquaLog URL" },
     { key: "AFLDB_URL", label: "AFLDB URL" },
     { key: "SABNZBD_URL", label: "SABnzbd URL" },
@@ -193,12 +202,21 @@ function EndpointsTab({ env, onUpdate }: { env: Record<string, string>; onUpdate
     { key: "PLEX_TOKEN", label: "Plex token", type: "password" },
     { key: "SABNZBD_API_KEY", label: "SABnzbd API key", type: "password" },
   ];
+  const urls = fields.filter(f => !f.type);
+  const keys = fields.filter(f => f.type === "password");
+  const render = (f: (typeof fields)[number]) => (
+    <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={env[f.key] ? "" : "not set"} onChange={v => onUpdate(f.key, v)} />
+  );
   return (
-    <div className="grid sm:grid-cols-2 gap-4">
-      {fields.map(f => (
-        <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={env[f.key] ? "" : "not set"} onChange={v => onUpdate(f.key, v)} />
-      ))}
-    </div>
+    <>
+      <Panel title="Service URLs">
+        <Intro>Where the dashboard reaches each service for health checks and the home pages.</Intro>
+        <FieldGrid>{urls.map(render)}</FieldGrid>
+      </Panel>
+      <Panel title="Service API keys">
+        <FieldGrid>{keys.map(render)}</FieldGrid>
+      </Panel>
+    </>
   );
 }
 
@@ -212,13 +230,68 @@ function NotificationsTab({ env, onUpdate }: { env: Record<string, string>; onUp
     { key: "EMAIL_RECIPIENTS", label: "Recipients (comma-separated)" },
     { key: "HEALTHCHECKS_PING_URL", label: "Heartbeat URL", type: "password" },
   ];
-  return <div className="space-y-4"><p className="text-sm text-muted-foreground">Alert delivery and dead-man heartbeat configuration.</p><div className="grid sm:grid-cols-2 gap-4">{fields.map((field) => <Input key={field.key} label={field.label} name={field.key} type={field.type ?? "text"} value={env[field.key] ?? ""} onChange={(value) => onUpdate(field.key, value)} />)}</div></div>;
+  return (
+    <Panel title="Notifications">
+      <Intro>Alert email delivery and the dead-man heartbeat the server pings while it is running.</Intro>
+      <FieldGrid>
+        {fields.map((field) => <Input key={field.key} label={field.label} name={field.key} type={field.type ?? "text"} value={env[field.key] ?? ""} onChange={(value) => onUpdate(field.key, value)} />)}
+      </FieldGrid>
+    </Panel>
+  );
+}
+
+function HomeTab({ env, onUpdate }: { env: Record<string, string>; onUpdate: (key: string, val: string) => void }) {
+  const hubFields = [
+    { key: "HUB_TITLE", label: "Hub title", placeholder: "Home" },
+    { key: "HUB_CALENDARS", label: "Calendars (Name|#colour|ical-url; …)", type: "password", placeholder: "Family|#3987e5|https://calendar.google.com/…/basic.ics" },
+    { key: "HUB_LISTS", label: "Lists (comma-separated)", placeholder: "To do,Shopping" },
+    { key: "HUB_COUNTDOWNS", label: "Countdowns (Name|YYYY-MM-DD or Name|MM-DD; …)", placeholder: "Christmas|12-25;Holiday|2027-01-10" },
+    { key: "HUB_NIGHT", label: "Night dimming (HH:MM-HH:MM)", placeholder: "22:00-06:30" },
+    { key: "HUB_MEDIA_CALENDAR", label: "Show Sonarr/Radarr on the calendar (true/false)", placeholder: "true" },
+    { key: "IMMICH_API_KEY", label: "Immich API key (photos)", type: "password" },
+    { key: "HUB_PHOTO_ALBUMS", label: "Immich album ids (comma-separated)", placeholder: "from the album URL: /albums/<id>" },
+    { key: "HUB_PHOTO_SECONDS", label: "Seconds per photo", placeholder: "60" },
+  ];
+  const fields = [
+    { key: "WEATHER_LOCATION", label: "Weather location name", placeholder: "Melbourne" },
+    { key: "WEATHER_LATITUDE", label: "Latitude (or off)", placeholder: "-37.8136" },
+    { key: "WEATHER_LONGITUDE", label: "Longitude", placeholder: "144.9631" },
+    { key: "CALENDAR_DAYS", label: "Calendar look-ahead (days)", placeholder: "7" },
+    { key: "RSS_FEEDS", label: "RSS feeds (comma-separated URLs)", placeholder: "https://…/rss, https://…/atom.xml" },
+    { key: "QBITTORRENT_USER", label: "qBittorrent username" },
+    { key: "QBITTORRENT_PASSWORD", label: "qBittorrent password", type: "password" },
+  ];
+  return (
+    <>
+      <Panel title="Home hub · /hub">
+        <Intro>
+          The family display on the Pi. Calendar addresses are private links: Google Calendar → Settings → your calendar → “Secret address in iCal format”; iCloud → share calendar → Public Calendar; Outlook → Settings → Shared calendars → Publish → ICS. They stay on the server.
+          The Immich key needs album.read and asset.view permissions.
+        </Intro>
+        <FieldGrid>
+          {hubFields.map(f => (
+            <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
+          ))}
+        </FieldGrid>
+      </Panel>
+      <Panel title="Apps, media and weather · /home">
+        <Intro>
+          Weather is shared by both pages. Plex, Sonarr, Radarr and SABnzbd use the keys on the Service endpoints tab. Bookmarks are edited on the page itself.
+        </Intro>
+        <FieldGrid>
+          {fields.map(f => (
+            <Input key={f.key} label={f.label} name={f.key} type={f.type ?? "text"} value={env[f.key] ?? ""} placeholder={f.placeholder} onChange={v => onUpdate(f.key, v)} />
+          ))}
+        </FieldGrid>
+      </Panel>
+    </>
+  );
 }
 
 // ─── Main Admin Page ──────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [tab, setTab] = useState<"thresholds" | "vpn" | "unifi" | "endpoints" | "notifications" | "security">("thresholds");
+  const [tab, setTab] = useState<"thresholds" | "vpn" | "unifi" | "endpoints" | "home" | "notifications" | "security">("thresholds");
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<any>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -258,8 +331,8 @@ export default function AdminPage() {
       body: JSON.stringify({ updates: edits }),
     });
     setSaving(false);
-    if (ok) { setSaveMessage(data.message ?? "Saved."); }
-    else { setSaveError(data.error ?? "Failed to save."); }
+    if (ok) { setSaveMessage(data.message ?? "Changes saved."); }
+    else { setSaveError(data.error ?? "The server didn't write .env. Check the service log, then save again."); }
   }
 
   async function handleLogout() {
@@ -269,7 +342,14 @@ export default function AdminPage() {
     setEdits({});
   }
 
-  if (authed === null) return <Skeleton className="h-64 w-full" />;
+  if (authed === null) {
+    return (
+      <div className="flex flex-col gap-8">
+        <PageHeader group="Admin" title="Admin" description="Checking whether this browser has an admin session." />
+        <Acquiring rows={3} />
+      </div>
+    );
+  }
   if (authed === false) return <LoginForm onLogin={loadSettings} />;
 
   const tabs: { id: typeof tab; label: string }[] = [
@@ -277,79 +357,97 @@ export default function AdminPage() {
     { id: "vpn", label: "VPN" },
     { id: "unifi", label: "UniFi" },
     { id: "endpoints", label: "Service endpoints" },
+    { id: "home", label: "Home & hub" },
     { id: "notifications", label: "Notifications" },
     { id: "security", label: "Security" },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Admin</h1>
-          <p className="text-muted-foreground mt-1">Configuration and privileged actions</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Badge className="bg-green-500 text-white">Authenticated</Badge>
-          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition">Sign out</button>
-        </div>
-      </div>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        group="Admin"
+        title="Settings"
+        description="Change the server settings the dashboard reads from .env; saved changes apply after a service restart."
+        meta={<>Writes to .env on the server · session lasts 8 hours</>}
+        actions={
+          <>
+            <Stamp status="HEALTHY" label="SIGNED IN" />
+            <Button type="button" variant="outline" onClick={handleLogout}>Sign out</Button>
+          </>
+        }
+      />
 
-      <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-xs text-blue-400">
-        Changes are written to <code className="font-mono bg-blue-900/20 px-1 rounded">.env</code> on the server. The service must be restarted for them to take effect: <code className="font-mono bg-blue-900/20 px-1 rounded">sudo systemctl restart streamanator-dashboard</code>
-      </div>
+      <Well className="flex flex-col gap-2">
+        <p className="m-0 text-sm text-silk-dim">
+          Saved changes are written to <Code>.env</Code> on the server. Restart the service for them to take effect:
+        </p>
+        <Code className="block w-fit max-w-full overflow-x-auto whitespace-nowrap px-2 py-1">sudo systemctl restart streamanator-dashboard</Code>
+      </Well>
 
       {loading ? (
-        <Skeleton className="h-64 w-full" />
+        <Acquiring rows={3} />
       ) : (
-        <Card>
-          <CardHeader className="pb-0">
-            <div className="flex gap-1 border-b -mb-px">
-              {tabs.map(t => <Tab key={t.id} label={t.label} active={tab === t.id} onClick={() => setTab(t.id)} />)}
-            </div>
-          </CardHeader>
-          <CardContent className="pt-6">
-            {tab === "thresholds" && <ThresholdsTab env={edits} onUpdate={handleFieldUpdate} />}
-            {tab === "vpn" && <VpnTab env={edits} onUpdate={handleFieldUpdate} />}
-            {tab === "unifi" && <UnifiTab env={edits} onUpdate={handleFieldUpdate} />}
-            {tab === "endpoints" && <EndpointsTab env={edits} onUpdate={handleFieldUpdate} />}
-            {tab === "notifications" && <NotificationsTab env={edits} onUpdate={handleFieldUpdate} />}
-            {tab === "security" && (
-              <div className="space-y-4">
-                <div className="grid sm:grid-cols-2 gap-4">
+        <div className="flex flex-col gap-5">
+          {!settings && (
+            <ErrorState title="Settings didn't load">
+              Your session is valid, but <span className="font-mono">/api/admin/settings</span> returned an error, so current values aren&apos;t shown. Reload the page to try again.
+            </ErrorState>
+          )}
+
+          <Segmented label="Settings group" options={tabs.map(t => ({ value: t.id, label: t.label }))} value={tab} onChange={setTab} />
+
+          {tab === "thresholds" && <ThresholdsTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "vpn" && <VpnTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "unifi" && <UnifiTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "endpoints" && <EndpointsTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "home" && <HomeTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "notifications" && <NotificationsTab env={edits} onUpdate={handleFieldUpdate} />}
+          {tab === "security" && (
+            <>
+              <Panel title="Credentials">
+                <FieldGrid>
                   <Input label="Admin password" name="ADMIN_PASSWORD" type="password" value={edits.ADMIN_PASSWORD ?? ""} placeholder="set new password" onChange={v => handleFieldUpdate("ADMIN_PASSWORD", v)} />
                   <Input label="Session secret (JWT signing key)" name="ADMIN_SESSION_SECRET" type="password" value={edits.ADMIN_SESSION_SECRET ?? ""} placeholder="set new secret (long random string)" onChange={v => handleFieldUpdate("ADMIN_SESSION_SECRET", v)} />
-                </div>
-                <div className="text-xs text-muted-foreground space-y-1 p-3 bg-muted/30 rounded">
-                  <p>• <strong>Admin password</strong> — entered at login and stored in the server-only .env file.</p>
-                  <p>• <strong>Session secret</strong> — signs the login cookie and must be at least 32 characters. There is no insecure fallback.</p>
-                  <p>• Changing either requires a service restart and a new login.</p>
-                </div>
+                </FieldGrid>
+                <Facts
+                  className="border-t border-seam pt-4"
+                  items={[
+                    ["Password", "Entered at sign-in and stored in the server-only .env file."],
+                    ["Session secret", "Signs the sign-in cookie and must be at least 32 characters. There is no insecure fallback."],
+                    ["After a change", "Restart the service, then sign in again."],
+                  ]}
+                />
+              </Panel>
 
-                {/* Active threshold display (read-only) */}
-                {settings?.thresholds && (
-                  <div className="mt-4">
-                    <h3 className="text-sm font-semibold mb-2">Active thresholds (read-only — edit in Thresholds tab)</h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <tbody>
-                          {Object.entries(settings.thresholds).map(([section, values]) => (
-                            typeof values === "object" ? Object.entries(values as Record<string, unknown>).map(([k, v]) => (
-                              <tr key={`${section}.${k}`} className="border-b border-border/30">
-                                <td className="py-1 pr-4 font-mono text-muted-foreground">{section}.{k}</td>
-                                <td className="py-1 font-bold">{String(v)}</td>
-                              </tr>
-                            )) : null
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+              {/* Active threshold display (read-only) */}
+              {settings?.thresholds && (
+                <Panel title="Active thresholds" action={<span className="text-[13px] text-graphite">Read-only. Edit them under Alert thresholds.</span>}>
+                  <div className="overflow-x-auto rounded-[3px] border border-seam">
+                    <Table>
+                      <TableHeader className="bg-well">
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead className="px-3">Setting</TableHead>
+                          <TableHead className="px-3 text-right">Value</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {Object.entries(settings.thresholds).map(([section, values]) => (
+                          typeof values === "object" ? Object.entries(values as Record<string, unknown>).map(([k, v]) => (
+                            <TableRow key={`${section}.${k}`}>
+                              <TableCell className="px-3 py-2 font-mono text-[13px] text-silk-dim">{section}.{k}</TableCell>
+                              <TableCell className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-silk">{String(v)}</TableCell>
+                            </TableRow>
+                          )) : null
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
-                )}
-              </div>
-            )}
-            <SaveBar saving={saving} message={saveMessage} error={saveError} onSave={handleSave} />
-          </CardContent>
-        </Card>
+                </Panel>
+              )}
+            </>
+          )}
+          <SaveBar saving={saving} message={saveMessage} error={saveError} onSave={handleSave} />
+        </div>
       )}
     </div>
   );

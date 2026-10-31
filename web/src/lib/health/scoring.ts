@@ -26,6 +26,8 @@ export interface HealthScore {
     criticalCount: number;
     warningCount: number;
     unknownCount: number;
+    /** Weighted score before the severity ceiling; differs from `score` when a fault capped it. */
+    rawScore?: number;
 }
 
 export class HealthScoreResult implements HealthScore {
@@ -36,6 +38,7 @@ export class HealthScoreResult implements HealthScore {
     criticalCount: number;
     warningCount: number;
     unknownCount: number;
+    rawScore?: number;
 
     constructor(init: HealthScore) {
         this.score = init.score;
@@ -45,6 +48,7 @@ export class HealthScoreResult implements HealthScore {
         this.criticalCount = init.criticalCount;
         this.warningCount = init.warningCount;
         this.unknownCount = init.unknownCount;
+        this.rawScore = init.rawScore;
     }
 
     get label(): string {
@@ -176,7 +180,8 @@ export function calculateHealthScore(components: ComponentHealth[]): HealthScore
         reason,
         criticalCount: critical.length,
         warningCount: warning.length,
-        unknownCount: unknown.length
+        unknownCount: unknown.length,
+        rawScore: Math.round(rawScore * 10) / 10
     });
 }
 

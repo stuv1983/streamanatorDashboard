@@ -1,52 +1,109 @@
 "use client";
 
-import useSWR from "swr";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
+import * as React from "react";
+import { Code, ErrorState, Facts, Meter, Metric, PageHeader, Panel, Readout, Section, Source, Stamp, Void, Well } from "@/components/instrument";
+import { ReadingCards, SnapshotBoundary, useSnapshot } from "@/components/snapshot-ui";
 import type { Snapshot } from "@/lib/snapshot";
-import { Status } from "@/lib/status";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+function humanBps(bps: number | null | undefined): string | null {
+  if (bps == null) return null;
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let v = bps; let i = 0;
+  while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
 
-function StatusBadge({ status }: { status: Status }) {
-  const colorMap: Record<string, string> = {
-    [Status.HEALTHY]: "bg-green-500 text-white",
-    [Status.INFO]: "bg-blue-500 text-white",
-    [Status.WARNING]: "bg-yellow-500 text-white",
-    [Status.CRITICAL]: "bg-red-500 text-white",
-  };
+function uptime(seconds: number | null | undefined): string | null {
+  if (seconds == null) return null;
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return days ? `${days}d ${hours}h` : `${hours}h`;
+}
+
+function radioBand(frequency: number | null): string {
+  if (frequency == null) return "Radio";
+  if (frequency >= 5.9) return "6 GHz";
+  if (frequency >= 4.9) return "5 GHz";
+  return "2.4 GHz";
+}
+
+function pct(v: number | null | undefined): string | null {
+  return v == null ? null : v.toFixed(1);
+}
+
+function sampleTime(ts: number | null | undefined): string | null {
+  if (!ts) return null;
+  return new Date(ts * 1000).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Renders `backtick` spans in collector text as inline code. */
+function withCode(text: string): React.ReactNode {
+  return text.split(/`([^`]+)`/g).map((part, i) => (i % 2 ? <Code key={i}>{part}</Code> : <React.Fragment key={i}>{part}</React.Fragment>));
+}
+
+function AlertPanels({ alerts }: { alerts: any[] }) {
+  if (!alerts.length) return null;
   return (
-    <Badge className={`${colorMap[status] ?? "bg-gray-500 text-white"} px-2 py-0.5 text-xs font-semibold`}>
-      {status}
-    </Badge>
+    <Section title="Alerts" count={alerts.length}>
+      <div className="flex flex-col gap-3">
+        {alerts.map((alert) => (
+          <Panel key={alert.key}>
+            <div className="flex flex-wrap items-center gap-3">
+              <Stamp status={alert.status} />
+              <p className="m-0 text-base font-semibold">{alert.title}</p>
+              {alert.component && <Source>{alert.component}</Source>}
+            </div>
+            {alert.detail && <p className="m-0 text-sm leading-normal text-silk-dim text-pretty">{alert.detail}</p>}
+            <Facts
+              items={[
+                alert.current_value && ["Now", <span key="n" className="font-mono">{alert.current_value}</span>],
+                alert.threshold && ["Threshold", <span key="t" className="font-mono">{alert.threshold}</span>],
+                alert.probable_cause && ["Probable cause", alert.probable_cause],
+                alert.recommended_action && ["Next check", withCode(alert.recommended_action)],
+              ]}
+            />
+          </Panel>
+        ))}
+      </div>
+    </Section>
   );
 }
 
-function MetricCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+const TH = "px-3 py-2.5 text-left font-panel text-[9.5px] font-normal uppercase tracking-[0.12em] text-graphite";
+const TD = "px-3 py-2.5 align-middle font-mono text-[13px]";
+
+function Table({ headers, children, label }: { headers: string[]; children: React.ReactNode; label: string }) {
   return (
-    <Card className="flex-1 min-w-[130px]">
-      <CardHeader className="pb-1 pt-4 px-4">
-        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">{label}</p>
-      </CardHeader>
-      <CardContent className="px-4 pb-4">
-        <p className="text-2xl font-bold">{value}</p>
-        {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-      </CardContent>
-    </Card>
+    <div className="overflow-x-auto rounded-[3px] border border-seam">
+      <table className="w-full whitespace-nowrap text-sm" aria-label={label}>
+        <thead className="bg-well">
+          <tr className="border-b border-seam">{headers.map((h) => <th key={h} scope="col" className={TH}>{h}</th>)}</tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
   );
+}
+
+function Row({ children }: { children: React.ReactNode }) {
+  return <tr className="border-b border-seam last:border-0 hover:bg-bezel/60">{children}</tr>;
+}
+
+/** A table cell value, or a compact void when it is not reported. */
+function Cell({ value, unit, note }: { value: React.ReactNode; unit?: string; note?: string }) {
+  return <Readout value={value} unit={unit} size="sm" note={note} className="text-[13px]" />;
 }
 
 export default function NetworkPage() {
-  const { data, error, isLoading } = useSWR<Snapshot>("/api/snapshot", fetcher, {
-    refreshInterval: 60000,
-    keepPreviousData: true,
-  });
+  const { data, error, isLoading } = useSnapshot();
+  return (
+    <SnapshotBoundary data={data} error={error} isLoading={isLoading}>
+      {(snapshot) => <NetworkView snapshot={snapshot} />}
+    </SnapshotBoundary>
+  );
+}
 
-  if (error) return <div className="text-red-500 py-10">Failed to load snapshot: {String(error)}</div>;
-  if (isLoading && !data) return <Skeleton className="h-96 w-full" />;
-
-  const snapshot = data!;
+function NetworkView({ snapshot }: { snapshot: Snapshot }) {
   const raw = (snapshot.raw?.network ?? {}) as Record<string, any>;
   const internet = raw.internet_ping ?? null;
   const gatewayPing = raw.gateway_ping ?? null;
@@ -60,215 +117,220 @@ export default function NetworkPage() {
   const firewallPolicies: any[] = raw.unifi_firewall_policies ?? [];
   const component = snapshot.components?.network;
   const readings: any[] = (component?.readings as any[]) ?? [];
+  const alerts: any[] = (component?.alerts as any[]) ?? [];
   const dnsReading = readings.find((r) => r.key === "network.dns");
   const wanReading = readings.find((r) => r.key === "network.wan_ip");
+  const internetReading = readings.find((r) => r.key === "network.internet");
+  const gatewayReading = readings.find((r) => r.key === "network.gateway");
+  const unifiReading = readings.find((r) => r.key === "network.unifi");
 
-  function humanBps(bps: number | null): string {
-    if (bps == null) return "—";
-    const units = ["B/s", "KB/s", "MB/s", "GB/s"];
-    let v = bps; let i = 0;
-    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
-    return `${v.toFixed(1)} ${units[i]}`;
-  }
-
-  function uptime(seconds: number | null): string {
-    if (seconds == null) return "—";
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    return days ? `${days}d ${hours}h` : `${hours}h`;
-  }
-
-  function radioBand(frequency: number | null): string {
-    if (frequency == null) return "Radio";
-    if (frequency >= 5.9) return "6 GHz";
-    if (frequency >= 4.9) return "5 GHz";
-    return "2.4 GHz";
-  }
+  const gatewayUnreachable = gatewayPing && gatewayPing.latency_ms == null && gatewayPing.packets_sent;
+  const dnsDisplay = dnsReading?.display_value ?? dnsReading?.value ?? null;
+  const ports = devices.flatMap((device) => (device.ports ?? []).map((port: any) => ({ device, port })));
+  const radioDevices = devices.filter((device) => device.radios?.length);
+  const sampled = sampleTime(snapshot.collected_at);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Network</h1>
-        <p className="text-muted-foreground mt-1">Internet reachability, WAN state and UniFi infrastructure</p>
-      </div>
+    <div className="flex flex-col gap-10">
+      <PageHeader
+        group="Infrastructure"
+        title="Network"
+        description="Can streamanator reach the internet, and is the UniFi gateway, switching and Wi-Fi fabric up?"
+        status={component?.status}
+        meta={["local:ping", sampled && `sampled ${sampled}`].filter(Boolean).join(" · ")}
+      />
 
-      {/* Internet KPIs */}
-      <div className="flex flex-wrap gap-3">
-        <MetricCard
-          label="Internet latency"
-          value={internet?.latency_ms != null ? `${Math.round(internet.latency_ms)} ms` : "—"}
-          sub={internet?.target ? `ICMP to ${internet.target}` : undefined}
-        />
-        <MetricCard
-          label="Packet loss"
-          value={internet?.packet_loss_percent != null ? `${internet.packet_loss_percent.toFixed(1)}%` : "—"}
-        />
-        <MetricCard
-          label="Jitter"
-          value={internet?.jitter_ms != null ? `${internet.jitter_ms.toFixed(1)} ms` : "—"}
-        />
-        <MetricCard
-          label="Local gateway"
-          value={gatewayPing?.latency_ms != null ? `${gatewayPing.latency_ms.toFixed(1)} ms` : "unreachable"}
-          sub={raw.gateway_ip ? `Default gateway ${raw.gateway_ip}` : undefined}
-        />
-        <MetricCard label="DNS" value={dnsReading?.display_value ?? dnsReading?.value ?? "—"} />
-      </div>
+      <AlertPanels alerts={alerts} />
 
-      {/* WAN IP */}
+      <Section title="Internet" note={internet?.target ? `ICMP to ${internet.target}` : undefined}>
+        <Well>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+            <Metric
+              label="Latency"
+              value={internet?.latency_ms != null ? Math.round(internet.latency_ms) : null}
+              unit="ms"
+              state={internetReading?.state}
+              note={internetReading?.detail || "No ping reply."}
+            />
+            <Metric
+              label="Packet loss"
+              value={pct(internet?.packet_loss_percent)}
+              unit="%"
+              note="No ping result."
+            />
+            <Metric label="Jitter" value={pct(internet?.jitter_ms)} unit="ms" note="Not measured." />
+            <Metric
+              label="Local gateway"
+              value={gatewayPing?.latency_ms != null ? gatewayPing.latency_ms.toFixed(1) : null}
+              unit="ms"
+              state={gatewayUnreachable ? "OFFLINE" : undefined}
+              note={gatewayUnreachable ? "No reply to ping." : gatewayReading?.detail || "Gateway could not be probed."}
+              hint={raw.gateway_ip ? <span className="font-mono">{raw.gateway_ip}</span> : undefined}
+            />
+            <Metric
+              label="DNS lookup"
+              value={dnsDisplay}
+              unit={dnsReading?.display_value == null && dnsDisplay != null ? dnsReading?.unit : undefined}
+              state={dnsReading?.state}
+              note={dnsReading?.detail || "No DNS probe result."}
+            />
+          </div>
+        </Well>
+      </Section>
+
       {(wanReading || wanChange) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              WAN public IP
-              {wanReading && <StatusBadge status={wanReading.status} />}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid sm:grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Current</p>
-                <p className="font-mono font-bold text-lg">{wanReading?.value ?? "unknown"}</p>
-                {wanReading?.detail && <p className="text-xs text-muted-foreground mt-1">{wanReading.detail}</p>}
-              </div>
+        <Section title="WAN public IP">
+          <Panel>
+            <div className="flex flex-wrap items-center gap-3">
+              {wanReading && <Stamp status={wanReading.status} />}
+              {wanReading?.detail && <p className="m-0 text-sm text-silk-dim text-pretty">{wanReading.detail}</p>}
+            </div>
+            <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-3">
+              <Metric label="Current" value={wanReading?.value ?? null} state={wanReading?.state} note={wanReading?.detail} />
               {wanChange && (
-                <div className="space-y-1 text-xs">
-                  <p><span className="font-medium">Previous:</span> {wanChange.previous ?? "—"}</p>
-                  {wan?.org && <p className="text-muted-foreground">{wan.org} · {wan.location}</p>}
-                </div>
+                <Metric label="Previous" value={wanChange.previous ?? null} size="sm" note="No change recorded since first seen." />
+              )}
+              {wanChange && (wan?.org || wan?.location) && (
+                <Metric label="Provider" value={[wan?.org, wan?.location].filter(Boolean).join(" · ")} size="sm" />
               )}
             </div>
-          </CardContent>
-        </Card>
+            {wanReading?.source && <Source>{wanReading.source}</Source>}
+          </Panel>
+        </Section>
       )}
 
-      {/* UniFi fabric */}
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold">UniFi fabric</h2>
-            <p className="text-sm text-muted-foreground">Gateway, switches, access points, radios and physical ports from the read-only Integration API.</p>
-          </div>
-          {controller?.reachable && <Badge variant="outline" className="font-mono">Network {controller.version || "connected"}</Badge>}
-        </div>
-
+      <Section
+        title="UniFi fabric"
+        count={devices.length || undefined}
+        note={controller?.reachable ? `Network ${controller.version || "connected"} · read-only Integration API` : "Read-only Integration API"}
+      >
         {raw.unifi_devices_error && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-300">
-            UniFi inventory unavailable: {raw.unifi_devices_error}
-          </div>
+          <ErrorState title="UniFi device inventory didn't load" detail={raw.unifi_devices_error}>
+            Check the controller URL and API key in the dashboard settings, and that the controller is reachable from streamanator.
+          </ErrorState>
+        )}
+
+        {!devices.length && !raw.unifi_devices_error && (
+          <Void
+            state={unifiReading?.state ?? "NO_DATA"}
+            note={unifiReading?.detail || "The controller returned no devices."}
+          />
         )}
 
         {gatewayStatus?.configured && (
-          <div className="grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2 lg:grid-cols-5">
-            {[
-              ["Gateway", gatewayStatus.name || gatewayStatus.model || "—"],
-              ["State", gatewayStatus.state || "—"],
-              ["CPU", gatewayStatus.cpuPercent == null ? "—" : `${gatewayStatus.cpuPercent.toFixed(1)}%`],
-              ["Memory", gatewayStatus.memoryPercent == null ? "—" : `${gatewayStatus.memoryPercent.toFixed(1)}%`],
-              ["Uptime", uptime(gatewayStatus.uptimeSeconds)],
-            ].map(([label, value]) => <div key={label} className="bg-card px-4 py-3"><p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 font-mono text-sm font-semibold">{value}</p></div>)}
-          </div>
+          <Panel title="Gateway">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+              <Metric label="Device" value={gatewayStatus.name || gatewayStatus.model || null} size="sm" />
+              <Metric label="State" value={gatewayStatus.state || null} size="sm" />
+              <div className="flex flex-col gap-2">
+                <Metric label="CPU" value={pct(gatewayStatus.cpuPercent)} unit="%" size="sm" note="Not reported." />
+                <Meter value={gatewayStatus.cpuPercent} label="Gateway CPU" />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Metric label="Memory" value={pct(gatewayStatus.memoryPercent)} unit="%" size="sm" note="Not reported." />
+                <Meter value={gatewayStatus.memoryPercent} label="Gateway memory" />
+              </div>
+              <Metric label="Uptime" value={uptime(gatewayStatus.uptimeSeconds)} size="sm" note="Not reported." />
+            </div>
+          </Panel>
         )}
 
         {devices.length > 0 && (
-          <Card>
-            <CardContent className="overflow-x-auto pt-4">
-              <table className="w-full whitespace-nowrap text-sm">
-                <thead><tr className="border-b text-left text-xs text-muted-foreground">{["Device", "Role", "State", "Address", "Model", "CPU", "Memory", "Uptime", "Firmware"].map(header => <th key={header} className="py-2 pr-4">{header}</th>)}</tr></thead>
-                <tbody>{devices.map(device => <tr key={device.deviceId || device.mac} className="border-b border-border/40 last:border-0">
-                  <td className="py-2 pr-4 font-medium">{device.name || device.mac}</td>
-                  <td className="py-2 pr-4 capitalize">{device.role}</td>
-                  <td className="py-2 pr-4"><Badge className={String(device.state).toUpperCase() === "ONLINE" ? "bg-emerald-500 text-white" : "bg-red-500 text-white"}>{device.state || "unknown"}</Badge></td>
-                  <td className="py-2 pr-4 font-mono text-xs">{device.ipAddress || "—"}</td>
-                  <td className="py-2 pr-4 font-mono text-xs">{device.model || "—"}</td>
-                  <td className="py-2 pr-4 font-mono">{device.cpuPercent == null ? "—" : `${device.cpuPercent.toFixed(1)}%`}</td>
-                  <td className="py-2 pr-4 font-mono">{device.memoryPercent == null ? "—" : `${device.memoryPercent.toFixed(1)}%`}</td>
-                  <td className="py-2 pr-4 font-mono">{uptime(device.uptimeSeconds)}</td>
-                  <td className="py-2 font-mono text-xs">{device.firmwareVersion || "—"}{device.firmwareUpdatable ? " · update" : ""}</td>
-                </tr>)}</tbody>
-              </table>
-            </CardContent>
-          </Card>
+          <Table label="UniFi devices" headers={["Device", "Role", "State", "Address", "Model", "CPU", "Memory", "Uptime", "Firmware"]}>
+            {devices.map((device) => {
+              const online = String(device.state).toUpperCase() === "ONLINE";
+              return (
+                <Row key={device.deviceId || device.mac}>
+                  <td className={TD}>{device.name || device.mac}</td>
+                  <td className="px-3 py-2.5 text-[13px] capitalize text-silk-dim">{device.role}</td>
+                  <td className="px-3 py-2.5">
+                    <Stamp status={device.state ? (online ? "HEALTHY" : "CRITICAL") : "UNKNOWN"} label={device.state ? String(device.state).toUpperCase() : "UNKNOWN"} />
+                  </td>
+                  <td className={TD}><Cell value={device.ipAddress || null} /></td>
+                  <td className={TD}><Cell value={device.model || null} /></td>
+                  <td className={TD}><Cell value={pct(device.cpuPercent)} unit="%" /></td>
+                  <td className={TD}><Cell value={pct(device.memoryPercent)} unit="%" /></td>
+                  <td className={TD}><Cell value={uptime(device.uptimeSeconds)} /></td>
+                  <td className={TD}>
+                    <span className="inline-flex items-center gap-2">
+                      <Cell value={device.firmwareVersion || null} />
+                      {device.firmwareUpdatable && <span className="font-sans text-xs text-silk-dim">update available</span>}
+                    </span>
+                  </td>
+                </Row>
+              );
+            })}
+          </Table>
         )}
 
-        {devices.some(device => device.radios?.length) && (
+        {(unifiNetworks.length > 0 || firewallPolicies.length > 0) && (
+          <Source>
+            Controller inventory: {unifiNetworks.length} networks · {firewallPolicies.filter((policy) => policy.enabled).length} enabled firewall policies
+          </Source>
+        )}
+      </Section>
+
+      {radioDevices.length > 0 && (
+        <Section title="Radios" count={radioDevices.reduce((n, d) => n + d.radios.length, 0)}>
           <div className="grid gap-3 lg:grid-cols-2">
-            {devices.filter(device => device.radios?.length).map(device => <Card key={`radio-${device.deviceId}`}><CardHeader className="pb-2"><CardTitle className="text-sm">{device.name || device.model} radios</CardTitle></CardHeader><CardContent className="space-y-2">{device.radios.map((radio: any, index: number) => <div key={index} className="grid grid-cols-4 gap-2 rounded-md bg-muted/35 px-3 py-2 text-xs"><strong>{radioBand(radio.frequencyGhz)}</strong><span>Ch {radio.channel ?? "—"}</span><span>{radio.channelWidthMhz ? `${radio.channelWidthMhz} MHz` : "—"}</span><span className="text-right">{radio.txRetriesPercent == null ? "—" : `${radio.txRetriesPercent.toFixed(1)}% retry`}</span></div>)}</CardContent></Card>)}
-          </div>
-        )}
-
-        {devices.some(device => device.ports?.length) && (
-          <Card><CardHeader className="pb-2"><CardTitle className="text-sm">Switch ports</CardTitle></CardHeader><CardContent className="overflow-x-auto"><table className="w-full whitespace-nowrap text-xs"><thead><tr className="border-b text-left text-muted-foreground">{["Switch", "Port", "State", "Speed", "PoE"].map(header => <th key={header} className="py-2 pr-4">{header}</th>)}</tr></thead><tbody>{devices.flatMap(device => (device.ports ?? []).map((port: any) => <tr key={`${device.deviceId}-${port.index}`} className="border-b border-border/40 last:border-0"><td className="py-2 pr-4 font-medium">{device.name || device.model}</td><td className="py-2 pr-4 font-mono">{port.index ?? "—"}</td><td className="py-2 pr-4">{port.state || "—"}</td><td className="py-2 pr-4 font-mono">{port.speedMbps == null ? "—" : `${port.speedMbps} Mbps`}</td><td className="py-2">{port.poeState || (port.poeEnabled ? "enabled" : "—")}</td></tr>))}</tbody></table></CardContent></Card>
-        )}
-
-        {(unifiNetworks.length > 0 || firewallPolicies.length > 0) && <p className="text-xs text-muted-foreground">Controller inventory: {unifiNetworks.length} networks · {firewallPolicies.filter(policy => policy.enabled).length} enabled firewall policies.</p>}
-      </div>
-
-      {/* VLANs */}
-      {vlans.length > 0 && (
-        <div>
-          <h2 className="text-xl font-semibold mb-3">VLANs</h2>
-          <Card>
-            <CardContent className="pt-4 overflow-x-auto">
-              <table className="w-full text-sm whitespace-nowrap">
-                <thead>
-                  <tr className="text-muted-foreground text-xs border-b">
-                    {["VLAN","Name","Subnet","Clients","RX","TX","Firewall blocks"].map(h => (
-                      <th key={h} className="text-left py-1 pr-4">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {vlans.map((vlan: any) => (
-                    <tr key={vlan.vlanId} className="border-b border-border/40 last:border-0">
-                      <td className="py-1.5 pr-4 font-mono">{vlan.vlanId}</td>
-                      <td className="py-1.5 pr-4 font-medium">{vlan.name}</td>
-                      <td className="py-1.5 pr-4 font-mono text-xs">{vlan.subnet}</td>
-                      <td className="py-1.5 pr-4">{vlan.clientCount?.toLocaleString() ?? "—"}</td>
-                      <td className="py-1.5 pr-4">{humanBps(vlan.rxBytesPerSec)}</td>
-                      <td className="py-1.5 pr-4">{humanBps(vlan.txBytesPerSec)}</td>
-                      <td className="py-1.5">{vlan.firewallBlocks?.toLocaleString() ?? "—"}</td>
-                    </tr>
+            {radioDevices.map((device) => (
+              <Panel key={`radio-${device.deviceId}`}>
+                <p className="m-0 font-mono text-[15px] font-semibold">{device.name || device.model}</p>
+                <div className="flex flex-col">
+                  {device.radios.map((radio: any, index: number) => (
+                    <div key={index} className="grid grid-cols-2 items-center gap-x-4 gap-y-2 border-t border-seam py-3 sm:grid-cols-4">
+                      <span className="font-mono text-sm font-semibold">{radioBand(radio.frequencyGhz)}</span>
+                      <Metric label="Channel" value={radio.channel ?? null} size="sm" />
+                      <Metric label="Width" value={radio.channelWidthMhz || null} unit="MHz" size="sm" />
+                      <Metric label="TX retries" value={pct(radio.txRetriesPercent)} unit="%" size="sm" />
+                    </div>
                   ))}
-                </tbody>
-              </table>
-              <p className="text-xs text-muted-foreground mt-2">An em dash means UniFi does not expose that measurement; it does not mean zero.</p>
-            </CardContent>
-          </Card>
-        </div>
+                </div>
+              </Panel>
+            ))}
+          </div>
+        </Section>
       )}
 
-      {/* Readings */}
+      {ports.length > 0 && (
+        <Section title="Switch ports" count={ports.length}>
+          <Table label="Switch ports" headers={["Switch", "Port", "State", "Speed", "PoE"]}>
+            {ports.map(({ device, port }) => (
+              <Row key={`${device.deviceId}-${port.index}`}>
+                <td className={TD}>{device.name || device.model}</td>
+                <td className={TD}><Cell value={port.index ?? null} /></td>
+                <td className="px-3 py-2.5 text-[13px]"><Cell value={port.state || null} /></td>
+                <td className={TD}><Cell value={port.speedMbps ?? null} unit="Mbps" /></td>
+                <td className="px-3 py-2.5 text-[13px]"><Cell value={port.poeState || (port.poeEnabled ? "enabled" : null)} note="No PoE" /></td>
+              </Row>
+            ))}
+          </Table>
+        </Section>
+      )}
+
+      {vlans.length > 0 && (
+        <Section title="VLANs" count={vlans.length} note="Hatched cells mean UniFi does not expose that measurement. They are not zero.">
+          <Table label="VLANs" headers={["VLAN", "Name", "Subnet", "Clients", "RX", "TX", "Firewall blocks"]}>
+            {vlans.map((vlan: any) => (
+              <Row key={vlan.vlanId}>
+                <td className={TD}>{vlan.vlanId}</td>
+                <td className="px-3 py-2.5 text-[13px] font-semibold">{vlan.name}</td>
+                <td className={TD}><Cell value={vlan.subnet || null} /></td>
+                <td className={TD}><Cell value={vlan.clientCount?.toLocaleString("en-AU") ?? null} /></td>
+                <td className={TD}><Cell value={humanBps(vlan.rxBytesPerSec)} /></td>
+                <td className={TD}><Cell value={humanBps(vlan.txBytesPerSec)} /></td>
+                <td className={TD}><Cell value={vlan.firewallBlocks?.toLocaleString("en-AU") ?? null} /></td>
+              </Row>
+            ))}
+          </Table>
+        </Section>
+      )}
+
       {readings.length > 0 && (
-        <div>
-          <h2 className="text-xl font-semibold mb-3">Health readings</h2>
-          <Card>
-            <CardContent className="pt-4">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-muted-foreground text-xs border-b">
-                    <th className="text-left py-1 pr-4">Metric</th>
-                    <th className="text-left py-1 pr-4">Value</th>
-                    <th className="text-left py-1 pr-4">Status</th>
-                    <th className="text-left py-1">Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {readings.map((r: any) => (
-                    <tr key={r.key} className="border-b border-border/40 last:border-0">
-                      <td className="py-1.5 pr-4 font-medium">{r.label}</td>
-                      <td className="py-1.5 pr-4 font-mono text-xs">{r.value ?? "—"}{r.unit ?? ""}</td>
-                      <td className="py-1.5 pr-4"><StatusBadge status={r.status} /></td>
-                      <td className="py-1.5 text-xs text-muted-foreground">{r.detail ?? ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        </div>
+        <Section title="Health readings" count={readings.length}>
+          <ReadingCards readings={readings} />
+        </Section>
       )}
     </div>
   );
 }
-

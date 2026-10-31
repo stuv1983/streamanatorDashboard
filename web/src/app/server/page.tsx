@@ -1,44 +1,12 @@
 "use client";
 
-import useSWR from "swr";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Status } from "@/lib/status";
+import * as React from "react";
+import { Code, Facts, Meter, Metric, PageHeader, Panel, Readout, Section, Source, Stamp, Void, Well } from "@/components/instrument";
+import { ReadingCards, SnapshotBoundary, useSnapshot } from "@/components/snapshot-ui";
 import type { Snapshot } from "@/lib/snapshot";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
-
-function StatusBadge({ status }: { status: Status }) {
-  const colorMap: Record<string, string> = {
-    [Status.HEALTHY]: "bg-green-500 text-white",
-    [Status.INFO]: "bg-blue-500 text-white",
-    [Status.WARNING]: "bg-yellow-500 text-white",
-    [Status.CRITICAL]: "bg-red-500 text-white",
-  };
-  return (
-    <Badge className={`${colorMap[status] ?? "bg-gray-500 text-white"} px-2 py-0.5 text-xs font-semibold`}>
-      {status}
-    </Badge>
-  );
-}
-
-function MetricCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <Card className="flex-1 min-w-[130px]">
-      <CardHeader className="pb-1 pt-4 px-4">
-        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">{label}</p>
-      </CardHeader>
-      <CardContent className="px-4 pb-4">
-        <p className="text-2xl font-bold">{value}</p>
-        {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-      </CardContent>
-    </Card>
-  );
-}
-
-function humanDuration(seconds: number): string {
-  if (!seconds || seconds < 0) return "â€”";
+function humanDuration(seconds: number | null | undefined): string | null {
+  if (!seconds || seconds < 0) return null;
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -49,8 +17,8 @@ function humanDuration(seconds: number): string {
   return parts.join(" ") || "<1m";
 }
 
-function humanBytes(bytes: number): string {
-  if (bytes == null) return "â€”";
+function humanBytes(bytes: number | null | undefined): string | null {
+  if (bytes == null) return null;
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let i = 0;
   let v = bytes;
@@ -58,156 +26,241 @@ function humanBytes(bytes: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+function fixed(v: unknown, digits = 1): string | null {
+  return typeof v === "number" && !Number.isNaN(v) ? v.toFixed(digits) : null;
+}
+
+function sampleTime(ts: number | null | undefined): string | null {
+  if (!ts) return null;
+  return new Date(ts * 1000).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Pulls the warn / critical numbers out of a reading's threshold text ("warn >90%, critical >97%"). */
+function limitsFrom(threshold: string | null | undefined): { warn?: number; crit?: number } {
+  const t = threshold ?? "";
+  const warn = t.match(/warn\s*[≥>]\s*([\d.]+)/i)?.[1];
+  const crit = t.match(/critical\s*[≥>]\s*([\d.]+)/i)?.[1];
+  return { warn: warn ? Number(warn) : undefined, crit: crit ? Number(crit) : undefined };
+}
+
+/** Available-memory limits are "below" thresholds ("warn <10%, critical <5% available"). */
+function lowLimitsFrom(threshold: string | null | undefined): { warn?: number; crit?: number } {
+  const t = threshold ?? "";
+  const warn = t.match(/warn\s*<\s*([\d.]+)/i)?.[1];
+  const crit = t.match(/critical\s*<\s*([\d.]+)/i)?.[1];
+  return { warn: warn ? Number(warn) : undefined, crit: crit ? Number(crit) : undefined };
+}
+
+function withCode(text: string): React.ReactNode {
+  return text.split(/`([^`]+)`/g).map((part, i) => (i % 2 ? <Code key={i}>{part}</Code> : <React.Fragment key={i}>{part}</React.Fragment>));
+}
+
+function AlertPanels({ alerts }: { alerts: any[] }) {
+  if (!alerts.length) return null;
+  return (
+    <Section title="Alerts" count={alerts.length}>
+      <div className="flex flex-col gap-3">
+        {alerts.map((alert) => (
+          <Panel key={alert.key}>
+            <div className="flex flex-wrap items-center gap-3">
+              <Stamp status={alert.status} />
+              <p className="m-0 text-base font-semibold">{alert.title}</p>
+              {alert.component && <Source>{alert.component}</Source>}
+            </div>
+            {alert.detail && <p className="m-0 text-sm leading-normal text-silk-dim text-pretty">{alert.detail}</p>}
+            <Facts
+              items={[
+                alert.current_value && ["Now", <span key="n" className="font-mono">{alert.current_value}</span>],
+                alert.threshold && ["Threshold", <span key="t" className="font-mono">{alert.threshold}</span>],
+                alert.probable_cause && ["Probable cause", alert.probable_cause],
+                alert.recommended_action && ["Next check", withCode(alert.recommended_action)],
+              ]}
+            />
+          </Panel>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 export default function ServerPage() {
-  const { data, error, isLoading } = useSWR<Snapshot>("/api/snapshot", fetcher, {
-    refreshInterval: 60000,
-    keepPreviousData: true,
-  });
+  const { data, error, isLoading } = useSnapshot();
+  return (
+    <SnapshotBoundary data={data} error={error} isLoading={isLoading}>
+      {(snapshot) => <ServerView snapshot={snapshot} />}
+    </SnapshotBoundary>
+  );
+}
 
-  if (error) return <div className="text-red-500 py-10">Failed to load snapshot: {String(error)}</div>;
-  if (isLoading && !data) return <Skeleton className="h-96 w-full" />;
-
-  const snapshot = data!;
+function ServerView({ snapshot }: { snapshot: Snapshot }) {
   const raw = (snapshot.raw?.server ?? {}) as Record<string, any>;
   const hostSnap = raw.snapshot ?? null;
   const cpu = hostSnap?.cpu ?? null;
   const memory = hostSnap?.memory ?? null;
   const load = hostSnap?.load ?? null;
   const component = snapshot.components?.server;
+  const readings: any[] = (component?.readings as any[]) ?? [];
+  const alerts: any[] = (component?.alerts as any[]) ?? [];
+  const reading = (key: string) => readings.find((r) => r.key === key);
+  const cpuReading = reading("server.cpu");
+  const iowaitReading = reading("server.iowait");
+  const memReading = reading("server.memory");
+  const swapReading = reading("server.swap");
+  const loadReading = reading("server.load");
+  const tempReading = reading("server.temperature");
+
+  const cpuLimits = limitsFrom(cpuReading?.threshold);
+  const iowaitLimits = limitsFrom(iowaitReading?.threshold);
+  const swapLimits = limitsFrom(swapReading?.threshold);
+  const memLow = lowLimitsFrom(memReading?.threshold);
+
+  const swapPercent: number | null = memory?.swapUsedPercent ?? memory?.swap_usedPercent ?? null;
+  const noSwap = memory != null && memory.swapTotalBytes === 0;
+  const availablePercent: number | null = memory?.availablePercent ?? null;
+  const usedPercent = availablePercent == null ? null : 100 - availablePercent;
+
+  const temperatures = (hostSnap?.temperatures ?? {}) as Record<string, number>;
+  const sensorEntries = Object.entries(temperatures);
+  const failedUnits = hostSnap?.failedUnits as any[] | null | undefined;
+  const sampled = sampleTime(snapshot.collected_at);
+  const source = snapshot.sources?.host;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Server</h1>
-        <p className="text-muted-foreground mt-1">Host health</p>
-      </div>
+    <div className="flex flex-col gap-10">
+      <PageHeader
+        group="Infrastructure"
+        title="Server"
+        description="Is the streamanator host itself under pressure: processor, memory, temperature and systemd?"
+        status={component?.status}
+        meta={[source, sampled && `sampled ${sampled}`].filter(Boolean).join(" · ") || undefined}
+      />
 
-      {/* KPI Row */}
-      <div className="flex flex-wrap gap-3">
-        <MetricCard label="CPU" value={cpu ? `${(cpu.usedPercent as number)?.toFixed(1)}%` : "â€”"} sub="excl. iowait" />
-        <MetricCard label="iowait" value={cpu ? `${(cpu.iowaitPercent as number)?.toFixed(1)}%` : "â€”"} />
-        <MetricCard label="RAM available" value={memory ? `${(memory.availablePercent as number)?.toFixed(1)}%` : "â€”"} />
-        <MetricCard label="Swap" value={memory ? `${(memory.swap_usedPercent as number)?.toFixed(1)}%` : "â€”"} />
-        <MetricCard
-          label="Load (1/5/15)"
-          value={load ? `${(load.one as number)?.toFixed(2)} / ${(load.five as number)?.toFixed(2)} / ${(load.fifteen as number)?.toFixed(2)}` : "â€”"}
-        />
-        <MetricCard
-          label="Uptime"
-          value={hostSnap?.uptimeSeconds ? humanDuration(hostSnap.uptimeSeconds as number) : "â€”"}
-        />
-        <MetricCard
-          label="Processes"
-          value={hostSnap?.processCount ? (hostSnap.processCount as number).toLocaleString() : "â€”"}
-        />
-      </div>
+      <AlertPanels alerts={alerts} />
 
-      {/* Memory breakdown */}
+      <Section title="Host">
+        <Well>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-6 min-[420px]:grid-cols-2 lg:grid-cols-4">
+            <div className="flex flex-col gap-2">
+              <Metric label="CPU" value={fixed(cpu?.usedPercent)} unit="%" state={cpuReading?.state} note={cpuReading?.detail || "CPU counters not read."} hint="Excludes iowait" />
+              <Meter value={cpu?.usedPercent} warn={cpuLimits.warn} crit={cpuLimits.crit} label="CPU" />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Metric label="iowait" value={fixed(cpu?.iowaitPercent)} unit="%" state={iowaitReading?.state} note={iowaitReading?.detail || "CPU counters not read."} hint="Time waiting on storage" />
+              <Meter value={cpu?.iowaitPercent} warn={iowaitLimits.warn} crit={iowaitLimits.crit} label="iowait" />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Metric label="RAM available" value={fixed(availablePercent)} unit="%" state={memReading?.state} note={memReading?.detail || "/proc/meminfo not read."} hint={memReading?.threshold || undefined} />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Metric
+                label="Swap used"
+                value={fixed(swapPercent)}
+                unit="%"
+                state={noSwap ? "NOT_CONFIGURED" : swapReading?.state}
+                note={noSwap ? "No swap device on this host." : "Swap usage not read."}
+              />
+              {!noSwap && <Meter value={swapPercent} warn={swapLimits.warn} crit={swapLimits.crit} label="Swap used" />}
+            </div>
+            <Metric
+              label="Load 1 / 5 / 15 min"
+              value={load ? `${fixed(load.one, 2) ?? "n/a"} / ${fixed(load.five, 2) ?? "n/a"} / ${fixed(load.fifteen, 2) ?? "n/a"}` : null}
+              size="sm"
+              state={loadReading?.state}
+              note="Load average not read."
+              hint={loadReading?.threshold || undefined}
+            />
+            <Metric label="Uptime" value={humanDuration(hostSnap?.uptimeSeconds)} size="sm" note="Uptime not read." />
+            <Metric label="Processes" value={hostSnap?.processCount ? (hostSnap.processCount as number).toLocaleString("en-AU") : null} size="sm" note="Process count not read." />
+          </div>
+        </Well>
+      </Section>
+
       {memory && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">Memory breakdown</CardTitle></CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {([
-                ["Total", memory.totalBytes],
-                ["Available", memory.availableBytes],
-                ["Used", memory.usedBytes],
-                ["Cache + buffers", memory.cachedBytes],
-              ] as [string, number][]).map(([label, val]) => (
-                <div key={label}>
-                  <p className="text-xs text-muted-foreground">{label}</p>
-                  <p className="font-bold">{humanBytes(val)}</p>
+        <Section title="Memory" note="Availability is judged on MemAvailable, not free memory.">
+          <Panel>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+              <Metric label="Total" value={humanBytes(memory.totalBytes)} size="sm" />
+              <Metric label="Available" value={humanBytes(memory.availableBytes)} size="sm" />
+              <Metric label="In use" value={humanBytes(memory.usedBytes)} size="sm" />
+              <Metric label="Cache + buffers" value={humanBytes(memory.cachedBytes)} size="sm" />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Meter
+                value={usedPercent}
+                warn={memLow.warn != null ? 100 - memLow.warn : undefined}
+                crit={memLow.crit != null ? 100 - memLow.crit : undefined}
+                label="Memory in use"
+              />
+              <p className="m-0 text-xs leading-snug text-silk-dim">
+                Bar shows memory in use. Cache is reclaimable memory doing useful work, so it counts as available.
+                {memLow.warn != null && <> Ticks mark the alert points: warning below {memLow.warn}% available{memLow.crit != null && <>, critical below {memLow.crit}%</>}.</>}
+              </p>
+            </div>
+          </Panel>
+        </Section>
+      )}
+
+      <Section title="Temperatures" count={sensorEntries.length || undefined}>
+        {sensorEntries.length > 0 ? (
+          <Panel padded={false} className="px-5 py-1">
+            <div className="flex flex-col">
+              {sensorEntries.map(([sensor, temp], i) => (
+                <div key={sensor} className={`flex flex-wrap items-center justify-between gap-x-6 gap-y-1 py-3 ${i ? "border-t border-seam" : ""}`}>
+                  <span className="min-w-0 break-all font-mono text-sm text-silk-dim">{sensor}</span>
+                  <Readout value={fixed(temp)} unit="°C" size="sm" />
                 </div>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground mt-3">
-              Cache is reclaimable memory doing useful work â€” availability is judged on MemAvailable, not free memory.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Temperatures */}
-      {hostSnap?.temperatures && Object.keys(hostSnap.temperatures as object).length > 0 && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">Temperatures</CardTitle></CardHeader>
-          <CardContent>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-muted-foreground text-xs border-b">
-                  <th className="text-left py-1 pr-4">Sensor</th>
-                  <th className="text-left py-1">Temperature</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(hostSnap.temperatures as Record<string, number>).map(([sensor, temp]) => (
-                  <tr key={sensor} className="border-b border-border/40 last:border-0">
-                    <td className="py-1.5 pr-4 font-medium">{sensor}</td>
-                    <td className="py-1.5">{temp.toFixed(1)} Â°C</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* systemd */}
-      <div>
-        <h2 className="text-xl font-semibold mb-3">systemd</h2>
-        {hostSnap?.failedUnits == null ? (
-          <div className="text-yellow-500 text-sm">systemd could not be queried.</div>
-        ) : (hostSnap.failedUnits as any[]).length === 0 ? (
-          <div className="text-green-500 text-sm">âœ“ No failed units.</div>
+            {tempReading && (
+              <div className="flex flex-wrap items-center gap-3 border-t border-seam py-3">
+                <Stamp status={tempReading.status} />
+                <span className="text-sm text-silk-dim">{tempReading.detail}</span>
+              </div>
+            )}
+          </Panel>
         ) : (
-          <div className="space-y-2">
-            <div className="text-red-500 text-sm">{(hostSnap.failedUnits as any[]).length} failed unit(s)</div>
-            {(hostSnap.failedUnits as any[]).map((unit) => (
-              <Card key={unit.name} className="border-red-500/30">
-                <CardHeader className="pb-1">
-                  <CardTitle className="text-sm text-red-500">{unit.name}</CardTitle>
-                  {unit.description && <p className="text-xs text-muted-foreground">{unit.description}</p>}
-                </CardHeader>
-                <CardContent className="text-xs space-y-0.5">
-                  <p><span className="font-medium">Load:</span> {unit.load_state}</p>
-                  <p><span className="font-medium">Active:</span> {unit.active_state}</p>
-                  <p><span className="font-medium">Sub:</span> {unit.sub_state}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          <Void state={tempReading?.state ?? "NO_DATA"} note={tempReading?.detail || "No temperature sensors reported."} />
         )}
-      </div>
+      </Section>
 
-      {/* Readings table */}
-      {component?.readings && (component.readings as any[]).length > 0 && (
-        <div>
-          <h2 className="text-xl font-semibold mb-3">Health readings</h2>
-          <Card>
-            <CardContent className="pt-4">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-muted-foreground text-xs border-b">
-                    <th className="text-left py-1 pr-4">Metric</th>
-                    <th className="text-left py-1 pr-4">Value</th>
-                    <th className="text-left py-1">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(component.readings as any[]).map((r) => (
-                    <tr key={r.key} className="border-b border-border/40 last:border-0">
-                      <td className="py-1.5 pr-4 font-medium">{r.label}</td>
-                      <td className="py-1.5 pr-4 font-mono text-xs">{r.value ?? "â€”"}{r.unit ?? ""}</td>
-                      <td className="py-1.5"><StatusBadge status={r.status} /></td>
-                    </tr>
+      <Section title="systemd" count={Array.isArray(failedUnits) && failedUnits.length ? failedUnits.length : undefined} note={Array.isArray(failedUnits) && failedUnits.length ? "failed units" : undefined}>
+        {failedUnits == null ? (
+          <Void state="NO_DATA" note={<>systemd could not be queried. Check that the dashboard can run <Code>systemctl --failed</Code>.</>} />
+        ) : failedUnits.length === 0 ? (
+          <Panel>
+            <div className="flex flex-wrap items-center gap-3">
+              <Stamp status="HEALTHY" label="0 FAILED" />
+              <span className="text-sm text-silk-dim">No failed systemd units.</span>
+            </div>
+          </Panel>
+        ) : (
+          <Panel padded={false} className="px-5 py-1">
+            {failedUnits.map((unit, i) => (
+              <div key={unit.name} className={`grid grid-cols-1 gap-x-5 gap-y-2.5 py-3.5 md:grid-cols-[110px_minmax(0,1fr)_minmax(0,320px)] ${i ? "border-t border-seam" : ""}`}>
+                <div><Stamp status="CRITICAL" label="FAILED" /></div>
+                <div className="min-w-0">
+                  <p className="m-0 break-all font-mono text-[15px] font-semibold">{unit.name}</p>
+                  {unit.description && <p className="m-0 mt-1 text-sm text-silk-dim">{unit.description}</p>}
+                </div>
+                <dl className="m-0 grid grid-cols-3 gap-2">
+                  {([["Load", unit.load_state], ["Active", unit.active_state], ["Sub", unit.sub_state]] as const).map(([k, v]) => (
+                    <div key={k} className="flex flex-col gap-0.5">
+                      <dt className="text-xs text-graphite">{k}</dt>
+                      <dd className="m-0"><Readout value={v || null} size="sm" /></dd>
+                    </div>
                   ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        </div>
+                </dl>
+              </div>
+            ))}
+          </Panel>
+        )}
+      </Section>
+
+      {readings.length > 0 && (
+        <Section title="Health readings" count={readings.length}>
+          <ReadingCards readings={readings} />
+        </Section>
       )}
     </div>
   );
 }
-

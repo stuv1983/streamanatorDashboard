@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { LiveFrame } from "@/lib/live";
+import { cn } from "@/lib/utils";
 
 export interface GraphSeries {
   key: string;
@@ -37,6 +38,29 @@ function niceCeiling(value: number): number {
   const exp = 10 ** Math.floor(Math.log10(value));
   const m = value / exp;
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * exp;
+}
+
+const windowLabel = (seconds: number) => (seconds >= 120 ? `${Math.round(seconds / 60)} min` : `${seconds} s`);
+
+const isValue = (v: number | null | undefined): v is number => v !== null && v !== undefined && Number.isFinite(v);
+
+/** Axis lettering: mono, graphite, 11 px, on a well-coloured backing so traces never cross it. */
+function AxisLabel({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span className={cn("pointer-events-none absolute rounded-[2px] bg-well/80 px-1 font-mono text-[11px] leading-[15px] tabular-nums text-graphite", className)}>
+      {children}
+    </span>
+  );
+}
+
+/** A short line swatch: series identity, distinct from the square status lamp. */
+function Swatch({ color, fill }: { color: string; fill?: boolean }) {
+  return (
+    <span aria-hidden className="relative inline-block h-2.5 w-3.5 shrink-0">
+      {fill !== false && <span className="absolute inset-x-0 bottom-0 top-1 opacity-25" style={{ background: color }} />}
+      <span className="absolute inset-x-0 top-1 h-[2px]" style={{ background: color }} />
+    </span>
+  );
 }
 
 export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", format = v => v.toFixed(0), compact = false, className = "", ariaLabel }: Props) {
@@ -81,7 +105,7 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
     const x = (ts: number) => ((ts - start) / (end - start || 1)) * size.w;
     const y = (v: number) => size.h - (Math.min(v, ceiling) / (ceiling || 1)) * (size.h - 2) - 1;
 
-    // Recessive grid: quarters, hairline.
+    // Recessive graticule: quarters, hairline.
     ctx.strokeStyle = resolveColor(el, "var(--chart-grid)");
     ctx.lineWidth = 1;
     for (let i = 1; i < 4; i++) {
@@ -89,12 +113,15 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
       ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(size.w, gy); ctx.stroke();
     }
     if (!compact) {
-      // Vertical lines every 10 % of the window, like Task Manager's moving grid.
+      // Vertical divisions every 10 % of the window; they scroll with the trace.
       const step = (windowSeconds * 1000) / 10;
       for (let t = Math.ceil(start / step) * step; t < end; t += step) {
         const gx = Math.round(x(t)) + 0.5;
         ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, size.h); ctx.stroke();
       }
+      // Baseline in the axis colour, so zero reads as a floor rather than a missing line.
+      ctx.strokeStyle = resolveColor(el, "var(--chart-axis)");
+      ctx.beginPath(); ctx.moveTo(0, size.h - 0.5); ctx.lineTo(size.w, size.h - 0.5); ctx.stroke();
     }
 
     for (const s of series) {
@@ -107,23 +134,29 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
       for (const f of visible) {
         const v = s.value(f);
         const broken = prevTs !== null && f.ts - prevTs > expectedGap * 3;
-        if (v === null || v === undefined || !Number.isFinite(v) || broken) {
+        if (!isValue(v) || broken) {
           if (run.length) runs.push(run);
           run = [];
         }
-        if (v !== null && v !== undefined && Number.isFinite(v)) run.push([x(f.ts), y(v)]);
+        if (isValue(v)) run.push([x(f.ts), y(v)]);
         prevTs = f.ts;
       }
       if (run.length) runs.push(run);
 
       for (const points of runs) {
-        if (s.fill !== false && points.length > 1) {
+        if (points.length === 1) {
+          // A lone sample between gaps: mark it, so it isn't silently lost.
+          ctx.fillStyle = color;
+          ctx.fillRect(points[0][0] - 1.5, points[0][1] - 1.5, 3, 3);
+          continue;
+        }
+        if (s.fill !== false) {
           ctx.beginPath();
           ctx.moveTo(points[0][0], size.h);
           for (const [px, py] of points) ctx.lineTo(px, py);
           ctx.lineTo(points.at(-1)![0], size.h);
           ctx.closePath();
-          ctx.globalAlpha = 0.16;
+          ctx.globalAlpha = 0.14;
           ctx.fillStyle = color;
           ctx.fill();
           ctx.globalAlpha = 1;
@@ -131,7 +164,7 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
         ctx.beginPath();
         points.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
         ctx.strokeStyle = color;
-        ctx.lineWidth = compact ? 1.25 : 2;
+        ctx.lineWidth = compact ? 1.25 : 1.75;
         ctx.lineJoin = "round";
         ctx.stroke();
       }
@@ -140,22 +173,31 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
     if (hoverX !== null && !compact) {
       ctx.strokeStyle = resolveColor(el, "var(--chart-muted)");
       ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(hoverX + 0.5, 0); ctx.lineTo(hoverX + 0.5, size.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(Math.round(hoverX) + 0.5, 0); ctx.lineTo(Math.round(hoverX) + 0.5, size.h); ctx.stroke();
       ctx.setLineDash([]);
     }
   }, [visible, series, size, start, end, ceiling, compact, hoverX, windowSeconds, expectedGap]);
 
-  // Nearest frame to the pointer for the tooltip.
+  // Nearest frame to the pointer for the readout. If the pointer is over a
+  // gap in the stream, say so instead of borrowing a neighbouring sample.
   let hovered: LiveFrame | null = null;
-  if (hoverX !== null && visible.length && size.w) {
-    const target = start + (hoverX / size.w) * (end - start);
-    hovered = visible.reduce((best, f) => (Math.abs(f.ts - target) < Math.abs(best.ts - target) ? f : best), visible[0]);
+  let inGap = false;
+  let hoverTs = 0;
+  if (hoverX !== null && size.w) {
+    hoverTs = start + (hoverX / size.w) * (end - start);
+    if (visible.length) {
+      hovered = visible.reduce((best, f) => (Math.abs(f.ts - hoverTs) < Math.abs(best.ts - hoverTs) ? f : best), visible[0]);
+      inGap = Math.abs(hovered.ts - hoverTs) > expectedGap * 1.5;
+    } else {
+      inGap = true;
+    }
   }
+  const showReadout = hoverX !== null && !compact && size.w > 0;
 
   return (
     <div
       ref={wrap}
-      className={`relative min-h-0 overflow-hidden ${className}`}
+      className={cn("relative min-h-0 overflow-hidden", className)}
       role="img"
       aria-label={ariaLabel ?? series.map(s => s.label).join(", ")}
       onPointerMove={compact ? undefined : e => setHoverX(e.clientX - e.currentTarget.getBoundingClientRect().left)}
@@ -163,37 +205,48 @@ export function LiveGraph({ frames, series, windowSeconds = 60, max = "auto", fo
     >
       <canvas ref={canvas} style={{ width: size.w, height: size.h }} className="absolute inset-0" />
       {!compact && (
-        <span className="pointer-events-none absolute right-1.5 top-1 font-mono text-[10px] tabular-nums text-[var(--chart-muted)]">
-          {format(ceiling)}
-        </span>
+        <>
+          <AxisLabel className="right-1 top-1">{format(ceiling)}</AxisLabel>
+          {size.h >= 120 && <AxisLabel className="right-1 top-1/2 -translate-y-1/2">{format(ceiling / 2)}</AxisLabel>}
+          <AxisLabel className="bottom-1 left-1">−{windowLabel(windowSeconds)}</AxisLabel>
+          <AxisLabel className="bottom-1 right-1">now</AxisLabel>
+        </>
       )}
-      {hovered && hoverX !== null && (
+      {showReadout && (
         <div
-          className="pointer-events-none absolute top-2 z-10 min-w-36 rounded-md border bg-popover px-2.5 py-1.5 text-xs shadow-lg"
-          style={hoverX > size.w / 2 ? { right: size.w - hoverX + 10 } : { left: hoverX + 10 }}
+          className="pointer-events-none absolute top-2 z-10 min-w-40 rounded-[2px] border border-seam-strong bg-bezel px-2.5 py-2 text-xs shadow-[0_6px_18px_rgb(0_0_0/0.45)]"
+          style={hoverX! > size.w / 2 ? { right: size.w - hoverX! + 10 } : { left: hoverX! + 10 }}
         >
-          <p className="mb-1 font-mono text-[10px] text-muted-foreground">{new Date(hovered.ts).toLocaleTimeString()}</p>
-          {series.map(s => {
-            const v = s.value(hovered!);
-            return (
-              <p key={s.key} className="flex items-center justify-between gap-3">
-                <span className="flex items-center gap-1.5"><i className="inline-block h-2 w-2 rounded-full" style={{ background: s.color }} />{s.label}</span>
-                <span className="font-mono tabular-nums">{v === null || v === undefined ? "no data" : format(v)}</span>
-              </p>
-            );
-          })}
+          <p className="m-0 mb-1.5 font-mono text-[11px] tabular-nums text-graphite">
+            {new Date(inGap || !hovered ? hoverTs : hovered.ts).toLocaleTimeString()}
+          </p>
+          {inGap || !hovered ? (
+            <p className="m-0 text-silk-dim">No samples here: the stream had a gap.</p>
+          ) : (
+            series.map(s => {
+              const v = s.value(hovered!);
+              return (
+                <p key={s.key} className="m-0 flex items-center justify-between gap-4 py-px">
+                  <span className="flex items-center gap-1.5 text-silk-dim"><Swatch color={s.color} fill={s.fill} />{s.label}</span>
+                  {isValue(v)
+                    ? <span className="font-mono tabular-nums text-silk">{format(v)}</span>
+                    : <span className="font-panel text-[9px] uppercase tracking-[0.12em] text-graphite">no data</span>}
+                </p>
+              );
+            })
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export function Legend({ series }: { series: Pick<GraphSeries, "key" | "label" | "color">[] }) {
+export function Legend({ series }: { series: Array<Pick<GraphSeries, "key" | "label" | "color"> & { fill?: boolean }> }) {
   return (
-    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-silk-dim">
       {series.map(s => (
         <span key={s.key} className="flex items-center gap-1.5">
-          <i className="inline-block h-2 w-2 rounded-full" style={{ background: s.color }} />{s.label}
+          <Swatch color={s.color} fill={s.fill} />{s.label}
         </span>
       ))}
     </div>
